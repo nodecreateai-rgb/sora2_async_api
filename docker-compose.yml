@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  sora2api:
+    image: thesmallhancat/sora2api:latest
+    container_name: sora2api
+    ports:
+      - "8000:8000"
+    volumes:
+      # 数据库文件持久化（重要：确保 token 数据不丢失）
+      - ./data:/app/data
+      # 缓存文件持久化
+      - ./tmp:/app/tmp
+      # 配置文件
+      - ./config/setting.toml:/app/config/setting.toml
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped

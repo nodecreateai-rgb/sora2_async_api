@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  sora2api:
+    image: thesmallhancat/sora2api:latest
+    container_name: sora2api
+    ports:
+      - "8000:8000"
+    volumes:
+      # 数据库文件持久化（重要：确保 token 数据不丢失）
+      - ./data:/app/data
+      # 缓存文件持久化
+      - ./tmp:/app/tmp
+      # 配置文件
+      - ./config/setting_warp.toml:/app/config/setting.toml
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    depends_on:
+      - warp
+
+  warp:
+    image: caomingjun/warp
+    container_name: warp
+    restart: always
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "1080:1080"
+    environment:
+      - WARP_SLEEP=2
+    cap_add:
+      - MKNOD
+      - AUDIT_WRITE
+      - NET_ADMIN
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=0
+      - net.ipv4.conf.all.src_valid_mark=1
+    volumes:
+      - ./data:/var/lib/cloudflare-warp
