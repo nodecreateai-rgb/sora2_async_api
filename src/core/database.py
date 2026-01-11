@@ -1,7 +1,7 @@
 """Database storage layer"""
 import asyncpg
 import json
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional, List
 from urllib.parse import urlparse
 from .models import Token, TokenStats, Task, RequestLog, AdminConfig, ProxyConfig, WatermarkFreeConfig, CacheConfig, GenerationConfig, TokenRefreshConfig
@@ -514,7 +514,11 @@ class Database:
         async with pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM token_stats WHERE token_id = $1", token_id)
             if row:
-                return TokenStats(**dict(row))
+                row_dict = dict(row)
+                # Convert date object to string if present
+                if row_dict.get('today_date') and isinstance(row_dict['today_date'], date):
+                    row_dict['today_date'] = row_dict['today_date'].isoformat()
+                return TokenStats(**row_dict)
             return None
     
     async def increment_image_count(self, token_id: int):
