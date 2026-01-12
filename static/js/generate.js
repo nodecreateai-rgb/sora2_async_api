@@ -2853,10 +2853,13 @@
                 let extractedUrl = candidates[0];
 
                 // content/markdown 中的 <video src> 或直接的媒体链接
-                if (!extractedUrl && obj.content) {
-                  const htmlMatch = obj.content.match(/<video[^>]+src=['"]([^'"]+)['"]/i);
+                // 检查 obj.content 和 delta.content（支持换行符）
+                const contentToCheck = obj.content || delta.content || '';
+                if (!extractedUrl && contentToCheck) {
+                  // 使用 [\s\S] 来匹配包括换行符在内的所有字符
+                  const htmlMatch = contentToCheck.match(/<video[\s\S]*?src=['"]([^'"]+)['"]/i);
                   if (htmlMatch) extractedUrl = htmlMatch[1];
-                  const mdMatch = obj.content.match(/https?:[^\s)"'<>]+\.(mp4|mov|m4v|webm|png|jpg|jpeg|webp)/i);
+                  const mdMatch = contentToCheck.match(/https?:[^\s)"'<>]+\.(mp4|mov|m4v|webm|png|jpg|jpeg|webp)/i);
                   if (!extractedUrl && mdMatch) extractedUrl = mdMatch[0];
                 }
                 // 从最新 chunk 中兜底提取媒体链接
@@ -2900,7 +2903,8 @@
                   const outputField = delta.output ?? msg.output ?? obj.output;
                   const tryExtract = (text) => {
                     if (!text) return null;
-                    const htmlMatch = text.match(/<video[^>]+src=['"]([^'"]+)['"]/i);
+                    // 使用 [\s\S] 来匹配包括换行符在内的所有字符
+                    const htmlMatch = text.match(/<video[\s\S]*?src=['"]([^'"]+)['"]/i);
                     if (htmlMatch) return htmlMatch[1];
                     const anyMatch = text.match(/https?:[^\s)"'<>]+/i);
                     return anyMatch ? anyMatch[0] : null;
