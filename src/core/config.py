@@ -1,5 +1,6 @@
 """Configuration management"""
 import tomli
+import os
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -207,6 +208,29 @@ class Config:
         if "token_refresh" not in self._config:
             self._config["token_refresh"] = {}
         self._config["token_refresh"]["at_auto_refresh_enabled"] = enabled
+
+    @property
+    def max_retry_attempts(self) -> int:
+        """Get maximum retry attempts from environment variable or config file"""
+        # 优先从环境变量读取
+        env_value = os.getenv("MAX_RETRY_ATTEMPTS")
+        if env_value:
+            try:
+                return int(env_value)
+            except ValueError:
+                pass
+        # 从配置文件读取，默认值为 3
+        return self._config.get("generation", {}).get("max_retry_attempts", 3)
+
+    @property
+    def load_balancer_mode(self) -> str:
+        """Get load balancer mode from environment variable or config file"""
+        # 优先从环境变量读取
+        env_value = os.getenv("LOAD_BALANCER_MODE", "").lower()
+        if env_value in ["round-robin", "round_robin", "roundrobin"]:
+            return "round-robin"
+        # 从配置文件读取，默认值为 random
+        return self._config.get("generation", {}).get("load_balancer_mode", "random")
 
 # Global config instance
 config = Config()

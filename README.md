@@ -28,6 +28,8 @@
 
 ### 高级特性
 - 🔐 **Token 管理** - 支持多 Token 管理和轮询负载均衡
+- 🔄 **Round-Robin 模式** - 支持轮询模式选择 Token，实现更均匀的负载分配
+- 🔁 **自动重试** - 支持配置最大重试次数，失败时自动切换 Token 重试
 - 🌐 **代理支持** - 支持 HTTP 和 SOCKS5 代理
 - 📝 **详细日志** - 完整的请求/响应日志记录
 - 🔄 **异步处理** - 高效的异步任务处理
@@ -154,6 +156,59 @@ python main.py
 - **密码**: `admin`
 
 ⚠️ **重要**: 首次登录后请立即修改密码！
+
+### 环境变量配置
+
+#### Round-Robin 模式和重试次数
+
+项目支持通过环境变量配置负载均衡模式和最大重试次数：
+
+**负载均衡模式**
+- 环境变量：`LOAD_BALANCER_MODE`
+- 可选值：
+  - `round-robin` 或 `round_robin` 或 `roundrobin` - 轮询模式（按顺序选择 Token）
+  - `random` - 随机模式（默认）
+- 示例：
+  ```bash
+  export LOAD_BALANCER_MODE=round-robin
+  ```
+
+**最大重试次数**
+- 环境变量：`MAX_RETRY_ATTEMPTS`
+- 默认值：`3`
+- 说明：当生成失败时，系统会自动切换到下一个 Token 重试，最多重试指定次数
+- 示例：
+  ```bash
+  export MAX_RETRY_ATTEMPTS=5
+  ```
+
+**Docker 部署示例**
+
+```bash
+# 使用 round-robin 模式，最多重试 5 次
+docker run -d \
+  -e LOAD_BALANCER_MODE=round-robin \
+  -e MAX_RETRY_ATTEMPTS=5 \
+  -p 8000:8000 \
+  sora2api
+```
+
+**Docker Compose 配置示例**
+
+在 `docker-compose.yml` 中添加环境变量：
+
+```yaml
+services:
+  sora2api:
+    environment:
+      - LOAD_BALANCER_MODE=round-robin
+      - MAX_RETRY_ATTEMPTS=5
+```
+
+**功能说明**
+- **Round-Robin 模式**：按顺序轮流选择 Token，确保每个 Token 的使用频率更加均匀
+- **自动重试**：当生成失败时（如 Token 过期、网络错误等），系统会自动切换到下一个 Token 重试
+- **智能重试**：某些错误（如无效模型、无可用 Token、内容策略违规）不会触发重试，直接返回错误
 
 ---
 

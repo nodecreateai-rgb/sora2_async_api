@@ -1,6 +1,6 @@
 """Load balancing module"""
 import random
-from typing import Optional
+from typing import Optional, List
 from ..core.models import Token
 from ..core.config import config
 from .token_manager import TokenManager
@@ -16,6 +16,9 @@ class LoadBalancer:
         self.concurrency_manager = concurrency_manager
         # Use image timeout from config as lock timeout
         self.token_lock = TokenLock(lock_timeout=config.image_timeout)
+        # Round-robin indices for different token types
+        self._round_robin_index_image = 0
+        self._round_robin_index_video = 0
 
     async def select_token(self, for_image_generation: bool = False, for_video_generation: bool = False, require_pro: bool = False) -> Optional[Token]:
         """
@@ -112,8 +115,8 @@ class LoadBalancer:
             if not available_tokens:
                 return None
 
-            # Random selection from available tokens
-            return random.choice(available_tokens)
+            # Select token based on load balancer mode
+            return self._select_token_from_list(available_tokens, for_image_generation=True)
         else:
             # For video generation, check concurrency limit
             if for_video_generation and self.concurrency_manager:
@@ -123,7 +126,35 @@ class LoadBalancer:
                         available_tokens.append(token)
                 if not available_tokens:
                     return None
-                return random.choice(available_tokens)
+                return self._select_token_from_list(available_tokens, for_image_generation=False)
             else:
                 # For video generation without concurrency manager, no additional filtering
-                return random.choice(active_tokens)
+                return self._select_token_from_list(active_tokens, for_image_generation=False)
+
+    def _select_token_from_list(self, tokens: List[Token], for_image_generation: bool = False) -> Token:
+        """Select a token from the list based on load balancer mode
+        
+        Args:
+            tokens: List of available tokens
+            for_image_generation: Whether this is for image generation (affects round-robin index)
+            
+        Returns:
+            Selected token
+        """
+        if not tokens:
+            return None
+        
+        mode = config.load_balancer_mode
+        
+        if mode == "round-robin":
+            # Round-robin selection
+            if for_image_generation:
+                index = self._round_robin_index_image % len(tokens)
+                self._round_robin_index_image = (self._round_robin_index_image + 1) % len(tokens)
+            else:
+                index = self._round_robin_index_video % len(tokens)
+                self._round_robin_index_video = (self._round_robin_index_video + 1) % len(tokens)
+            return tokens[index]
+        else:
+            # Random selection (default)
+            return random.choice(tokens)

@@ -355,46 +355,92 @@ class GenerationHandler:
         
         task_type = "video" if is_video else "image"
         
-        # Check if model requires Pro subscription
-        require_pro = model_config.get("require_pro", False)
+        # Retry logic with round-robin token selection
+        max_retries = config.max_retry_attempts
+        last_error = None
         
-        # Select token
-        token_obj = await self.load_balancer.select_token(
-            for_image_generation=is_image,
-            for_video_generation=is_video,
-            require_pro=require_pro
-        )
-        if not token_obj:
-            if require_pro:
-                raise Exception("No available Pro tokens. Pro models require a ChatGPT Pro subscription.")
-            elif is_image:
-                raise Exception("No available tokens for image generation. All tokens are either disabled, cooling down, locked, or expired.")
-            else:
-                raise Exception("No available tokens for video generation. All tokens are either disabled, cooling down, Sora2 quota exhausted, don't support Sora2, or expired.")
-        
-        # Acquire lock for image generation
-        if is_image:
-            lock_acquired = await self.load_balancer.token_lock.acquire_lock(token_obj.id)
-            if not lock_acquired:
-                raise Exception(f"Failed to acquire lock for token {token_obj.id}")
-            
-            # Acquire concurrency slot for image generation
-            if self.concurrency_manager:
-                concurrency_acquired = await self.concurrency_manager.acquire_image(token_obj.id)
-                if not concurrency_acquired:
-                    await self.load_balancer.token_lock.release_lock(token_obj.id)
-                    raise Exception(f"Failed to acquire concurrency slot for token {token_obj.id}")
-        
-        # Acquire concurrency slot for video generation
-        if is_video and self.concurrency_manager:
-            concurrency_acquired = await self.concurrency_manager.acquire_video(token_obj.id)
-            if not concurrency_acquired:
+        for attempt in range(max_retries):
+            token_obj = None
+            try:
+                # Check if model requires Pro subscription
+                require_pro = model_config.get("require_pro", False)
+                
+                # Select token (round-robin mode will be used automatically if configured)
+                token_obj = await self.load_balancer.select_token(
+                    for_image_generation=is_image,
+                    for_video_generation=is_video,
+                    require_pro=require_pro
+                )
+                if not token_obj:
+                    if require_pro:
+                        raise Exception("No available Pro tokens. Pro models require a ChatGPT Pro subscription.")
+                    elif is_image:
+                        raise Exception("No available tokens for image generation. All tokens are either disabled, cooling down, locked, or expired.")
+                    else:
+                        raise Exception("No available tokens for video generation. All tokens are either disabled, cooling down, Sora2 quota exhausted, don't support Sora2, or expired.")
+                
+                # Acquire lock for image generation
                 if is_image:
-                    await self.load_balancer.token_lock.release_lock(token_obj.id)
+                    lock_acquired = await self.load_balancer.token_lock.acquire_lock(token_obj.id)
+                    if not lock_acquired:
+                        raise Exception(f"Failed to acquire lock for token {token_obj.id}")
+                    
+                    # Acquire concurrency slot for image generation
                     if self.concurrency_manager:
-                        await self.concurrency_manager.release_image(token_obj.id)
-                raise Exception(f"Failed to acquire concurrency slot for token {token_obj.id}")
+                        concurrency_acquired = await self.concurrency_manager.acquire_image(token_obj.id)
+                        if not concurrency_acquired:
+                            await self.load_balancer.token_lock.release_lock(token_obj.id)
+                            raise Exception(f"Failed to acquire concurrency slot for token {token_obj.id}")
+                
+                # Acquire concurrency slot for video generation
+                if is_video and self.concurrency_manager:
+                    concurrency_acquired = await self.concurrency_manager.acquire_video(token_obj.id)
+                    if not concurrency_acquired:
+                        if is_image:
+                            await self.load_balancer.token_lock.release_lock(token_obj.id)
+                            if self.concurrency_manager:
+                                await self.concurrency_manager.release_image(token_obj.id)
+                        raise Exception(f"Failed to acquire concurrency slot for token {token_obj.id}")
+                
+                # Proceed with task submission
+                break  # Success - break out of retry loop
+                
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+                
+                # Release resources on error
+                if token_obj:
+                    if is_image:
+                        await self.load_balancer.token_lock.release_lock(token_obj.id)
+                        if self.concurrency_manager:
+                            await self.concurrency_manager.release_image(token_obj.id)
+                    if is_video and self.concurrency_manager:
+                        await self.concurrency_manager.release_video(token_obj.id)
+                    
+                    # Record error
+                    is_overload = "heavy_load" in error_str or "under heavy load" in error_str
+                    await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
+                
+                # Check if we should retry
+                non_retryable_errors = [
+                    "invalid model",
+                    "no available tokens",
+                    "no available pro tokens"
+                ]
+                should_retry = attempt < max_retries - 1 and not any(err in error_str for err in non_retryable_errors)
+                
+                if not should_retry:
+                    raise e
+                
+                # Log retry attempt
+                debug_logger.log_info(f"Task submission attempt {attempt + 1} failed: {str(e)}. Retrying...")
         
+        # All retries exhausted
+        if last_error:
+            raise last_error
+        
+        # Now proceed with actual task submission
         try:
             # Upload image if provided
             media_id = None
@@ -598,44 +644,143 @@ class GenerationHandler:
                         yield chunk
                     return
 
-        # Streaming mode: proceed with actual generation
-        # Check if model requires Pro subscription
-        require_pro = model_config.get("require_pro", False)
+        # Streaming mode: proceed with actual generation with retry logic
+        max_retries = config.max_retry_attempts
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                # Check if model requires Pro subscription
+                require_pro = model_config.get("require_pro", False)
 
-        # Select token (with lock for image generation, Sora2 quota check for video generation)
-        # If Pro is required, filter for Pro tokens only
-        token_obj = await self.load_balancer.select_token(
-            for_image_generation=is_image,
-            for_video_generation=is_video,
-            require_pro=require_pro
-        )
-        if not token_obj:
-            if require_pro:
-                raise Exception("No available Pro tokens. Pro models require a ChatGPT Pro subscription.")
-            elif is_image:
-                raise Exception("No available tokens for image generation. All tokens are either disabled, cooling down, locked, or expired.")
-            else:
-                raise Exception("No available tokens for video generation. All tokens are either disabled, cooling down, Sora2 quota exhausted, don't support Sora2, or expired.")
+                # Select token (with lock for image generation, Sora2 quota check for video generation)
+                # If Pro is required, filter for Pro tokens only
+                # Round-robin mode will be used automatically if configured
+                token_obj = await self.load_balancer.select_token(
+                    for_image_generation=is_image,
+                    for_video_generation=is_video,
+                    require_pro=require_pro
+                )
+                if not token_obj:
+                    if require_pro:
+                        raise Exception("No available Pro tokens. Pro models require a ChatGPT Pro subscription.")
+                    elif is_image:
+                        raise Exception("No available tokens for image generation. All tokens are either disabled, cooling down, locked, or expired.")
+                    else:
+                        raise Exception("No available tokens for video generation. All tokens are either disabled, cooling down, Sora2 quota exhausted, don't support Sora2, or expired.")
 
-        # Acquire lock for image generation
-        if is_image:
-            lock_acquired = await self.load_balancer.token_lock.acquire_lock(token_obj.id)
-            if not lock_acquired:
-                raise Exception(f"Failed to acquire lock for token {token_obj.id}")
+                # Acquire lock for image generation
+                if is_image:
+                    lock_acquired = await self.load_balancer.token_lock.acquire_lock(token_obj.id)
+                    if not lock_acquired:
+                        raise Exception(f"Failed to acquire lock for token {token_obj.id}")
 
-            # Acquire concurrency slot for image generation
-            if self.concurrency_manager:
-                concurrency_acquired = await self.concurrency_manager.acquire_image(token_obj.id)
-                if not concurrency_acquired:
-                    await self.load_balancer.token_lock.release_lock(token_obj.id)
-                    raise Exception(f"Failed to acquire concurrency slot for token {token_obj.id}")
+                    # Acquire concurrency slot for image generation
+                    if self.concurrency_manager:
+                        concurrency_acquired = await self.concurrency_manager.acquire_image(token_obj.id)
+                        if not concurrency_acquired:
+                            await self.load_balancer.token_lock.release_lock(token_obj.id)
+                            raise Exception(f"Failed to acquire concurrency slot for token {token_obj.id}")
 
-        # Acquire concurrency slot for video generation
-        if is_video and self.concurrency_manager:
-            concurrency_acquired = await self.concurrency_manager.acquire_video(token_obj.id)
-            if not concurrency_acquired:
-                raise Exception(f"Failed to acquire concurrency slot for token {token_obj.id}")
+                # Acquire concurrency slot for video generation
+                if is_video and self.concurrency_manager:
+                    concurrency_acquired = await self.concurrency_manager.acquire_video(token_obj.id)
+                    if not concurrency_acquired:
+                        if is_image:
+                            await self.load_balancer.token_lock.release_lock(token_obj.id)
+                            if self.concurrency_manager:
+                                await self.concurrency_manager.release_image(token_obj.id)
+                        raise Exception(f"Failed to acquire concurrency slot for token {token_obj.id}")
 
+                # If retrying, notify user
+                if attempt > 0 and stream:
+                    yield self._format_stream_chunk(
+                        reasoning_content=f"**Retry Attempt {attempt + 1}/{max_retries}**\n\nRetrying with a different token...\n"
+                    )
+
+                # Proceed with generation
+                async for chunk in self._execute_generation(
+                    model=model,
+                    prompt=prompt,
+                    image=image,
+                    video=video,
+                    remix_target_id=remix_target_id,
+                    model_config=model_config,
+                    is_image=is_image,
+                    is_video=is_video,
+                    token_obj=token_obj,
+                    stream=stream,
+                    start_time=start_time
+                ):
+                    yield chunk
+                
+                # Success - break out of retry loop
+                return
+                
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+                
+                # Release resources on error
+                if token_obj:
+                    if is_image:
+                        await self.load_balancer.token_lock.release_lock(token_obj.id)
+                        if self.concurrency_manager:
+                            await self.concurrency_manager.release_image(token_obj.id)
+                    if is_video and self.concurrency_manager:
+                        await self.concurrency_manager.release_video(token_obj.id)
+                    
+                    # Record error
+                    is_overload = "heavy_load" in error_str or "under heavy load" in error_str
+                    await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
+                
+                # Check if we should retry
+                # Don't retry on certain errors (e.g., invalid model, no tokens available)
+                non_retryable_errors = [
+                    "invalid model",
+                    "no available tokens",
+                    "no available pro tokens",
+                    "content policy violation"
+                ]
+                should_retry = attempt < max_retries - 1 and not any(err in error_str for err in non_retryable_errors)
+                
+                if not should_retry:
+                    # Last attempt or non-retryable error - raise exception
+                    raise e
+                
+                # Log retry attempt
+                debug_logger.log_info(f"Generation attempt {attempt + 1} failed: {str(e)}. Retrying...")
+        
+        # All retries exhausted
+        if last_error:
+            raise last_error
+
+    async def _execute_generation(self, model: str, prompt: str,
+                                  image: Optional[str] = None,
+                                  video: Optional[str] = None,
+                                  remix_target_id: Optional[str] = None,
+                                  model_config: Dict[str, Any] = None,
+                                  is_image: bool = False,
+                                  is_video: bool = False,
+                                  token_obj = None,
+                                  stream: bool = True,
+                                  start_time: float = None) -> AsyncGenerator[str, None]:
+        """Execute generation with the selected token
+        
+        Args:
+            model: Model name
+            prompt: Generation prompt
+            image: Base64 encoded image
+            video: Base64 encoded video or video URL
+            remix_target_id: Sora share link video ID for remix
+            model_config: Model configuration dictionary
+            is_image: Whether this is image generation
+            is_video: Whether this is video generation
+            token_obj: Selected token object
+            stream: Whether to stream response
+            start_time: Start time for logging
+        """
+        log_id = None
         task_id = None
         is_first_chunk = True  # Track if this is the first chunk
 
@@ -771,7 +916,10 @@ class GenerationHandler:
                 await self.concurrency_manager.release_video(token_obj.id)
 
             # Log successful request with complete task info
-            duration = time.time() - start_time
+            if start_time:
+                duration = time.time() - start_time
+            else:
+                duration = 0.0
 
             # Get complete task info from database
             task_info = await self.db.get_task(task_id)
@@ -825,7 +973,10 @@ class GenerationHandler:
                 pass
 
             # Update log entry with error data
-            duration = time.time() - start_time
+            if start_time:
+                duration = time.time() - start_time
+            else:
+                duration = 0.0
             if log_id:
                 if error_response:
                     # Structured error (e.g., unsupported_country_code)
