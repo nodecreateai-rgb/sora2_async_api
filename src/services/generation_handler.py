@@ -1067,6 +1067,10 @@ class GenerationHandler:
                             # Update last_progress for tracking
                             last_progress = progress_pct
                             status = task.get("status", "processing")
+                            
+                            # Update database progress even in non-streaming mode
+                            if not stream:
+                                await self.db.update_task(task_id, "processing", progress_pct)
 
                             # Output status every 30 seconds (not just when progress changes)
                             current_time = time.time()
@@ -1078,15 +1082,25 @@ class GenerationHandler:
                                 )
                             break
 
-                    # If task not found in pending tasks, it's completed - fetch from drafts
+                    # If task not found in pending tasks, check drafts (but only after waiting a bit)
+                    # This prevents false positives when task is just submitted
                     if not task_found:
+                        # Only check drafts if we've waited at least 10 seconds
+                        # This prevents checking drafts too early when task is still being processed
+                        elapsed_since_start = time.time() - start_time
+                        if elapsed_since_start < 10:
+                            # Task might still be initializing, continue polling
+                            debug_logger.log_info(f"Task {task_id} not found in pending tasks yet (elapsed: {elapsed_since_start:.1f}s), continuing to poll...")
+                            continue
                         debug_logger.log_info(f"Task {task_id} not found in pending tasks, fetching from drafts...")
                         result = await self.sora_client.get_video_drafts(token, token_id=token_id)
                         items = result.get("items", [])
 
                         # Find matching task in drafts
+                        draft_found = False
                         for item in items:
                             if item.get("task_id") == task_id:
+                                draft_found = True
                                 # Check for content violation
                                 kind = item.get("kind")
                                 reason_str = item.get("reason_str") or item.get("markdown_reason_str")
@@ -1309,6 +1323,15 @@ class GenerationHandler:
                                     )
                                     yield "data: [DONE]\n\n"
                                 return
+                        
+                        # If task not found in drafts either, it might still be processing
+                        # Continue polling instead of assuming it's completed
+                        if not draft_found:
+                            debug_logger.log_info(f"Task {task_id} not found in drafts either, continuing to poll...")
+                            # Update database to show we're still checking
+                            if not stream:
+                                await self.db.update_task(task_id, "processing", last_progress if last_progress > 0 else 0)
+                            continue
                 else:
                     result = await self.sora_client.get_image_tasks(token, token_id=token_id)
                     task_responses = result.get("task_responses", [])
@@ -1397,6 +1420,10 @@ class GenerationHandler:
                                         yield self._format_stream_chunk(
                                             reasoning_content=f"**Processing**\n\nGeneration in progress: {progress:.0f}% completed...\n"
                                         )
+                                else:
+                                    # Even if progress hasn't changed much, update database in non-streaming mode
+                                    if not stream:
+                                        await self.db.update_task(task_id, "processing", progress)
 
                     # For image generation, send heartbeat every 10 seconds if no progress update
                     if not is_video and stream:
