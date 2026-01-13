@@ -680,6 +680,14 @@ class GenerationHandler:
                     else:
                         raise Exception("No available tokens for video generation. All tokens are either disabled, cooling down, Sora2 quota exhausted, don't support Sora2, or expired.")
 
+                # Update log entry with token_id immediately after selecting token
+                # This ensures the log has the correct token_id even if generation fails early
+                if log_id:
+                    await self.db.update_request_log(
+                        log_id,
+                        token_id=token_obj.id
+                    )
+
                 # Acquire lock for image generation
                 if is_image:
                     lock_acquired = await self.load_balancer.token_lock.acquire_lock(token_obj.id)
