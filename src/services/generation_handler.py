@@ -816,8 +816,8 @@ class GenerationHandler:
             token_obj: Selected token object
             stream: Whether to stream response
             start_time: Start time for logging
+            log_id: Optional log ID to reuse existing log entry
         """
-        log_id = None
         task_id = None
         is_first_chunk = True  # Track if this is the first chunk
 
