@@ -169,6 +169,7 @@ class GenerationHandler:
         self.load_balancer = load_balancer
         self.db = db
         self.concurrency_manager = concurrency_manager
+        self.proxy_manager = proxy_manager  # Save proxy_manager as instance variable
         # Support environment variable for cache directory (useful for Dokploy/Nixpacks)
         import os
         cache_dir_env = os.getenv("CACHE_DIR", "tmp")
@@ -291,7 +292,9 @@ class GenerationHandler:
         """
         from curl_cffi.requests import AsyncSession
 
-        proxy_url = await self.load_balancer.proxy_manager.get_proxy_url()
+        proxy_url = None
+        if self.proxy_manager:
+            proxy_url = await self.proxy_manager.get_proxy_url()
 
         kwargs = {
             "timeout": 30,
