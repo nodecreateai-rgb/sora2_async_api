@@ -118,7 +118,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 debug_logger.logger.error(f"Error reading response body: {e}")
                 response_body = "<Unable to read response body>"
             
-            # Log response
+            # Log response (including error responses)
             debug_logger.log_api_response(
                 status_code=response.status_code,
                 path=request.url.path,
@@ -126,6 +126,21 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 body=response_body,
                 duration_ms=duration_ms
             )
+            
+            # If it's an error response, also log as error
+            if response.status_code >= 400:
+                error_msg = f"HTTP {response.status_code} Error"
+                if response_body:
+                    if isinstance(response_body, dict):
+                        error_msg = response_body.get("error", {}).get("message", str(response_body))
+                    else:
+                        error_msg = str(response_body)
+                debug_logger.log_api_error(
+                    path=request.url.path,
+                    error_message=error_msg,
+                    status_code=response.status_code,
+                    client_ip=client_ip
+                )
             
             return response
             

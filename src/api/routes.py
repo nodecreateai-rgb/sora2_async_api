@@ -5,7 +5,9 @@ from datetime import datetime
 from typing import List
 import json
 import re
+import traceback
 from ..core.auth import verify_api_key_header
+from ..core.logger import debug_logger
 from ..core.models import (
     ChatCompletionRequest,
     ImageGenerateRequest,
@@ -29,6 +31,16 @@ def set_generation_handler(handler: GenerationHandler):
     """Set generation handler instance"""
     global generation_handler
     generation_handler = handler
+
+def _log_exception(endpoint: str, exception: Exception):
+    """Log exception with full traceback"""
+    error_traceback = traceback.format_exc()
+    debug_logger.log_api_error(
+        path=endpoint,
+        error_message=str(exception),
+        status_code=500,
+        traceback_str=error_traceback
+    )
 
 def _extract_remix_id(text: str) -> str:
     """Extract remix ID from text
@@ -642,6 +654,8 @@ async def generate_video(
     except HTTPException:
         raise
     except Exception as e:
+        # Log the exception with full traceback
+        _log_exception("/v1/videos/generate", e)
         return JSONResponse(
             status_code=500,
             content={

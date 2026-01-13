@@ -10,15 +10,15 @@ class DebugLogger:
     """Debug logger for API requests and responses"""
     
     def __init__(self):
-        self.log_file = Path("logs.txt")
+        # Use absolute path or relative path, ensure directory exists
+        log_path = Path("logs.txt")
+        # Ensure parent directory exists
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.log_file = log_path
         self._setup_logger()
     
     def _setup_logger(self):
-        """Setup file logger"""
-        # Don't clear log file on startup - keep appending to existing logs
-        # if self.log_file.exists():
-        #     self.log_file.unlink()
-
+        """Setup logger with console output"""
         # Create logger
         self.logger = logging.getLogger("debug_logger")
         self.logger.setLevel(logging.DEBUG)
@@ -26,23 +26,19 @@ class DebugLogger:
         # Remove existing handlers
         self.logger.handlers.clear()
 
-        # Create file handler
-        file_handler = logging.FileHandler(
-            self.log_file,
-            mode='a',
-            encoding='utf-8'
-        )
-        file_handler.setLevel(logging.DEBUG)
+        # Create console handler (stdout)
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.DEBUG)
         
         # Create formatter
         formatter = logging.Formatter(
             '%(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
-        file_handler.setFormatter(formatter)
+        console_handler.setFormatter(formatter)
         
-        # Add handler
-        self.logger.addHandler(file_handler)
+        # Add console handler
+        self.logger.addHandler(console_handler)
         
         # Prevent propagation to root logger
         self.logger.propagate = False
@@ -367,7 +363,8 @@ class DebugLogger:
         path: str,
         error_message: str,
         status_code: Optional[int] = None,
-        client_ip: Optional[str] = None
+        client_ip: Optional[str] = None,
+        traceback_str: Optional[str] = None
     ):
         """Log API error - always logs regardless of debug_enabled"""
         try:
@@ -382,6 +379,11 @@ class DebugLogger:
                 self.logger.info(f"Status Code: {status_code}")
             
             self.logger.info(f"Error Message: {error_message}")
+            
+            # Add traceback if provided
+            if traceback_str:
+                self.logger.info("\n📋 Traceback:")
+                self.logger.info(traceback_str)
             
             self._write_separator()
             self.logger.info("")  # Empty line
