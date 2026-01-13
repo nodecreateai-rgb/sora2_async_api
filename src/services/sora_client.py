@@ -12,6 +12,7 @@ from typing import Optional, Dict, Any, Tuple
 from uuid import uuid4
 from curl_cffi.requests import AsyncSession
 from curl_cffi import CurlMime
+from fake_useragent import UserAgent
 from .proxy_manager import ProxyManager
 from ..core.config import config
 from ..core.logger import debug_logger
@@ -56,6 +57,62 @@ class SoraClient:
         self.proxy_manager = proxy_manager
         self.base_url = config.sora_base_url
         self.timeout = config.sora_timeout
+        # Initialize UserAgent for random user-agent generation
+        try:
+            self.ua = UserAgent()
+        except Exception as e:
+            # Fallback to default user-agent if UserAgent fails to initialize
+            debug_logger.logger.error(f"Failed to initialize UserAgent: {e}, using fallback")
+            self.ua = None
+    
+    def _get_random_user_agent(self, mobile: bool = False) -> str:
+        """Get a random user-agent string
+        
+        Args:
+            mobile: If True, return mobile user-agent (Android/iOS), otherwise desktop
+        """
+        try:
+            if self.ua:
+                if mobile:
+                    # Randomly choose between Android and iOS
+                    if random.choice([True, False]):
+                        # Android Chrome
+                        return self.ua.android
+                    else:
+                        # iOS Safari
+                        return self.ua.ios
+                else:
+                    # Randomly choose between Chrome, Firefox, Safari, Edge
+                    browsers = ['chrome', 'firefox', 'safari', 'edge']
+                    browser = random.choice(browsers)
+                    return getattr(self.ua, browser)
+            else:
+                # Fallback user-agents
+                if mobile:
+                    # Randomly choose mobile fallback
+                    mobile_agents = [
+                        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+                        "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+                        "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+                        "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+                    ]
+                    return random.choice(mobile_agents)
+                else:
+                    # Desktop fallback
+                    desktop_agents = [
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    ]
+                    return random.choice(desktop_agents)
+        except Exception as e:
+            # If UserAgent fails, use fallback
+            debug_logger.logger.error(f"Failed to get random user-agent: {e}, using fallback")
+            if mobile:
+                return "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+            else:
+                return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
     @staticmethod
     def _get_pow_parse_time() -> str:
@@ -160,7 +217,10 @@ class SoraClient:
         通过调用 /backend-api/sentinel/req 接口并解决 PoW
         """
         req_id = str(uuid4())
-        user_agent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+        # Use random user-agent for each request (randomly choose desktop or mobile)
+        # Use mobile user-agent 30% of the time to add more variety
+        use_mobile = random.random() < 0.3
+        user_agent = self._get_random_user_agent(mobile=use_mobile)
         pow_token = self._get_pow_token(user_agent)
 
         proxy_url = await self.proxy_manager.get_proxy_url()
@@ -194,7 +254,8 @@ class SoraClient:
                 "headers": headers,
                 "json": payload,
                 "timeout": 10,
-                "impersonate": "safari_ios"
+                # Remove impersonate to use our custom User-Agent
+                # "impersonate": "safari_ios"
             }
             if proxy_url:
                 kwargs["proxy"] = proxy_url
@@ -297,8 +358,14 @@ class SoraClient:
         """
         proxy_url = await self.proxy_manager.get_proxy_url(token_id)
 
+        # Generate random user-agent for each request (randomly choose desktop or mobile)
+        # Use mobile user-agent 30% of the time to add more variety
+        use_mobile = random.random() < 0.3
+        user_agent = self._get_random_user_agent(mobile=use_mobile)
+
         headers = {
-            "Authorization": f"Bearer {token}"
+            "Authorization": f"Bearer {token}",
+            "User-Agent": user_agent
         }
 
         # 只在生成请求时添加 sentinel token
@@ -314,7 +381,8 @@ class SoraClient:
             kwargs = {
                 "headers": headers,
                 "timeout": self.timeout,
-                "impersonate": "safari_ios"  # 自动生成 User-Agent 和浏览器指纹
+                # Remove impersonate to use our custom User-Agent
+                # "impersonate": "safari_ios"  # 自动生成 User-Agent 和浏览器指纹
             }
 
             if proxy_url:

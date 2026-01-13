@@ -402,8 +402,93 @@ class GenerationHandler:
                                 await self.concurrency_manager.release_image(token_obj.id)
                         raise Exception(f"Failed to acquire concurrency slot for token {token_obj.id}")
                 
-                # Proceed with task submission
-                break  # Success - break out of retry loop
+                # Proceed with actual task submission
+                # Upload image if provided
+                media_id = None
+                if image:
+                    image_data = self._decode_base64_image(image)
+                    media_id = await self.sora_client.upload_image(image_data, token_obj.token)
+                
+                # Generate task
+                if is_video:
+                    # Get n_frames from model configuration
+                    n_frames = model_config.get("n_frames", 300)
+                    
+                    # Extract style from prompt
+                    clean_prompt, style_id = self._extract_style(prompt)
+                    
+                    # Check if prompt is in storyboard format
+                    if self.sora_client.is_storyboard_prompt(clean_prompt):
+                        formatted_prompt = self.sora_client.format_storyboard_prompt(clean_prompt)
+                        task_id = await self.sora_client.generate_storyboard(
+                            formatted_prompt, token_obj.token,
+                            orientation=model_config["orientation"],
+                            media_id=media_id,
+                            n_frames=n_frames,
+                            style_id=style_id
+                        )
+                    else:
+                        # Normal video generation
+                        sora_model = model_config.get("model", "sy_8")
+                        video_size = model_config.get("size", "small")
+                        
+                        task_id = await self.sora_client.generate_video(
+                            clean_prompt, token_obj.token,
+                            orientation=model_config["orientation"],
+                            media_id=media_id,
+                            n_frames=n_frames,
+                            style_id=style_id,
+                            model=sora_model,
+                            size=video_size,
+                            token_id=token_obj.id
+                        )
+                else:
+                    # Image generation - validate required fields
+                    if not is_image:
+                        raise ValueError(f"Model {model} is not an image model, but trying to generate image")
+                    if "width" not in model_config or "height" not in model_config:
+                        raise ValueError(f"Image model {model} missing width or height configuration")
+                    
+                    task_id = await self.sora_client.generate_image(
+                        prompt, token_obj.token,
+                        width=model_config["width"],
+                        height=model_config["height"],
+                        media_id=media_id,
+                        token_id=token_obj.id
+                    )
+                
+                # Save task to database
+                task = Task(
+                    task_id=task_id,
+                    token_id=token_obj.id,
+                    model=model,
+                    prompt=prompt,
+                    status="processing",
+                    progress=0.0
+                )
+                await self.db.create_task(task)
+                
+                # Create initial log entry
+                # Use model_config['type'] to ensure consistency with handle_generation
+                await self._log_request(
+                    token_obj.id,
+                    f"generate_{model_config['type']}",
+                    {"model": model, "prompt": prompt, "has_image": image is not None},
+                    {},
+                    -1,
+                    -1.0,
+                    task_id=task_id
+                )
+                
+                # Record usage
+                await self.token_manager.record_usage(token_obj.id, is_video=is_video)
+                
+                # Start background polling task
+                asyncio.create_task(self._poll_task_result_background(
+                    task_id, token_obj.token, is_video, prompt, token_obj.id
+                ))
+                
+                return task_id, task_type
                 
             except Exception as e:
                 last_error = e
@@ -426,7 +511,8 @@ class GenerationHandler:
                 non_retryable_errors = [
                     "invalid model",
                     "no available tokens",
-                    "no available pro tokens"
+                    "no available pro tokens",
+                    "content policy violation"
                 ]
                 should_retry = attempt < max_retries - 1 and not any(err in error_str for err in non_retryable_errors)
                 
@@ -435,111 +521,15 @@ class GenerationHandler:
                 
                 # Log retry attempt
                 debug_logger.log_info(f"Task submission attempt {attempt + 1} failed: {str(e)}. Retrying...")
+                
+                # Wait a bit before retrying (exponential backoff for heavy_load)
+                if "heavy_load" in error_str or "under heavy load" in error_str:
+                    wait_time = min(2 ** attempt, 10)  # Max 10 seconds
+                    await asyncio.sleep(wait_time)
         
         # All retries exhausted
         if last_error:
             raise last_error
-        
-        # Now proceed with actual task submission
-        try:
-            # Upload image if provided
-            media_id = None
-            if image:
-                image_data = self._decode_base64_image(image)
-                media_id = await self.sora_client.upload_image(image_data, token_obj.token)
-            
-            # Generate task
-            if is_video:
-                # Get n_frames from model configuration
-                n_frames = model_config.get("n_frames", 300)
-                
-                # Extract style from prompt
-                clean_prompt, style_id = self._extract_style(prompt)
-                
-                # Check if prompt is in storyboard format
-                if self.sora_client.is_storyboard_prompt(clean_prompt):
-                    formatted_prompt = self.sora_client.format_storyboard_prompt(clean_prompt)
-                    task_id = await self.sora_client.generate_storyboard(
-                        formatted_prompt, token_obj.token,
-                        orientation=model_config["orientation"],
-                        media_id=media_id,
-                        n_frames=n_frames,
-                        style_id=style_id
-                    )
-                else:
-                    # Normal video generation
-                    sora_model = model_config.get("model", "sy_8")
-                    video_size = model_config.get("size", "small")
-                    
-                    task_id = await self.sora_client.generate_video(
-                        clean_prompt, token_obj.token,
-                        orientation=model_config["orientation"],
-                        media_id=media_id,
-                        n_frames=n_frames,
-                        style_id=style_id,
-                        model=sora_model,
-                        size=video_size,
-                        token_id=token_obj.id
-                    )
-            else:
-                # Image generation - validate required fields
-                if not is_image:
-                    raise ValueError(f"Model {model} is not an image model, but trying to generate image")
-                if "width" not in model_config or "height" not in model_config:
-                    raise ValueError(f"Image model {model} missing width or height configuration")
-                
-                task_id = await self.sora_client.generate_image(
-                    prompt, token_obj.token,
-                    width=model_config["width"],
-                    height=model_config["height"],
-                    media_id=media_id,
-                    token_id=token_obj.id
-                )
-            
-            # Save task to database
-            task = Task(
-                task_id=task_id,
-                token_id=token_obj.id,
-                model=model,
-                prompt=prompt,
-                status="processing",
-                progress=0.0
-            )
-            await self.db.create_task(task)
-            
-            # Create initial log entry
-            # Use model_config['type'] to ensure consistency with handle_generation
-            await self._log_request(
-                token_obj.id,
-                f"generate_{model_config['type']}",
-                {"model": model, "prompt": prompt, "has_image": image is not None},
-                {},
-                -1,
-                -1.0,
-                task_id=task_id
-            )
-            
-            # Record usage
-            await self.token_manager.record_usage(token_obj.id, is_video=is_video)
-            
-            # Start background polling task
-            asyncio.create_task(self._poll_task_result_background(
-                task_id, token_obj.token, is_video, prompt, token_obj.id
-            ))
-            
-            return task_id, task_type
-            
-        except Exception as e:
-            # Release resources on error
-            if is_image:
-                await self.load_balancer.token_lock.release_lock(token_obj.id)
-                if self.concurrency_manager:
-                    await self.concurrency_manager.release_image(token_obj.id)
-            
-            if is_video and self.concurrency_manager:
-                await self.concurrency_manager.release_video(token_obj.id)
-            
-            raise e
     
     async def _poll_task_result_background(self, task_id: str, token: str, is_video: bool,
                                           prompt: str, token_id: int):
