@@ -1,6 +1,6 @@
 """Data models"""
 from datetime import datetime
-from typing import Optional, List, Union
+from typing import Optional, List, Union, Dict, Any
 from pydantic import BaseModel
 
 class Token(BaseModel):
@@ -230,7 +230,7 @@ class TaskStatusResponse(BaseModel):
     progress: float  # 0.0-100.0
     model: str
     prompt: str
-    result_urls: Optional[List[str]] = None  # 结果URL列表
+    result_urls: Optional[Union[List[str], Dict[str, Any]]] = None  # 结果URL列表或角色信息字典
     error_message: Optional[str] = None  # 错误信息（如果有）
     created_at: Optional[str] = None  # ISO格式时间戳
     completed_at: Optional[str] = None  # ISO格式时间戳

@@ -107,7 +107,18 @@ async def get_task_status(
         result_urls = None
         if task.result_urls:
             try:
-                result_urls = json.loads(task.result_urls)
+                parsed_result = json.loads(task.result_urls)
+                # Check if this is a character creation task (returns dict instead of list)
+                if task.model == "character-creation":
+                    # For character creation, result_urls is a dict with character info
+                    # TaskStatusResponse now supports Union[List[str], Dict]
+                    if isinstance(parsed_result, dict):
+                        result_urls = parsed_result  # Keep as dict
+                    else:
+                        result_urls = parsed_result if isinstance(parsed_result, list) else [parsed_result]
+                else:
+                    # For other task types (image/video), result_urls should be a list
+                    result_urls = parsed_result if isinstance(parsed_result, list) else [parsed_result]
             except:
                 result_urls = [task.result_urls] if task.result_urls else None
         
