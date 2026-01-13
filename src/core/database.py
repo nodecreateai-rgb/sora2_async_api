@@ -725,6 +725,34 @@ class Database:
                 query = f"UPDATE request_logs SET {', '.join(updates)} WHERE id = ${param_num}"
                 await conn.execute(query, *params)
     
+    async def update_request_log_by_task_id(self, task_id: str, response_body: Optional[str] = None,
+                                           status_code: Optional[int] = None, duration: Optional[float] = None):
+        """Update request log by task_id"""
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            updates = []
+            params = []
+            param_num = 1
+
+            if response_body is not None:
+                updates.append(f"response_body = ${param_num}")
+                params.append(response_body)
+                param_num += 1
+            if status_code is not None:
+                updates.append(f"status_code = ${param_num}")
+                params.append(status_code)
+                param_num += 1
+            if duration is not None:
+                updates.append(f"duration = ${param_num}")
+                params.append(duration)
+                param_num += 1
+
+            if updates:
+                updates.append("updated_at = CURRENT_TIMESTAMP")
+                params.append(task_id)
+                query = f"UPDATE request_logs SET {', '.join(updates)} WHERE task_id = ${param_num}"
+                await conn.execute(query, *params)
+    
     async def get_recent_logs(self, limit: int = 100) -> List[dict]:
         """Get recent logs with token email"""
         pool = await self._get_pool()

@@ -561,6 +561,14 @@ class GenerationHandler:
             # Update task status
             await self.db.update_task(task_id, "failed", 0, error_message=str(e))
             
+            # Update request log
+            await self.db.update_request_log_by_task_id(
+                task_id,
+                response_body=json.dumps({"error": str(e), "status": "failed"}),
+                status_code=500,
+                duration=-1.0  # Duration unknown for failed tasks
+            )
+            
             # Release resources
             if not is_video:
                 await self.load_balancer.token_lock.release_lock(token_id)
@@ -1087,6 +1095,15 @@ class GenerationHandler:
                     debug_logger.log_info(f"Released concurrency slot for token {token_id} due to timeout")
 
                 await self.db.update_task(task_id, "failed", 0, error_message=f"Generation timeout after {elapsed_time:.1f} seconds")
+                
+                # Update request log
+                await self.db.update_request_log_by_task_id(
+                    task_id,
+                    response_body=json.dumps({"error": f"Generation timeout after {elapsed_time:.1f} seconds", "status": "failed"}),
+                    status_code=408,
+                    duration=elapsed_time
+                )
+                
                 raise Exception(f"Upstream API timeout: Generation exceeded {timeout} seconds limit")
 
 
@@ -1172,6 +1189,15 @@ class GenerationHandler:
 
                                     # Update task status
                                     await self.db.update_task(task_id, "failed", 0, error_message=error_message)
+                                    
+                                    # Update request log
+                                    duration = time.time() - start_time
+                                    await self.db.update_request_log_by_task_id(
+                                        task_id,
+                                        response_body=json.dumps({"error": error_message, "status": "failed"}),
+                                        status_code=400,
+                                        duration=duration
+                                    )
 
                                     # Release resources
                                     if token_id and self.concurrency_manager:
@@ -1360,6 +1386,15 @@ class GenerationHandler:
                                     task_id, "completed", 100.0,
                                     result_urls=json.dumps([local_url])
                                 )
+                                
+                                # Update request log
+                                duration = time.time() - start_time
+                                await self.db.update_request_log_by_task_id(
+                                    task_id,
+                                    response_body=json.dumps({"result_urls": [local_url], "status": "completed"}),
+                                    status_code=200,
+                                    duration=duration
+                                )
 
                                 if stream:
                                     # Final response with content
@@ -1440,6 +1475,15 @@ class GenerationHandler:
                                         task_id, "completed", 100.0,
                                         result_urls=json.dumps(local_urls)
                                     )
+                                    
+                                    # Update request log
+                                    duration = time.time() - start_time
+                                    await self.db.update_request_log_by_task_id(
+                                        task_id,
+                                        response_body=json.dumps({"result_urls": local_urls, "status": "completed"}),
+                                        status_code=200,
+                                        duration=duration
+                                    )
 
                                     if stream:
                                         # Final response with content (Markdown format)
@@ -1454,6 +1498,16 @@ class GenerationHandler:
                             elif status == "failed":
                                 error_msg = task_resp.get("error_message", "Generation failed")
                                 await self.db.update_task(task_id, "failed", progress, error_message=error_msg)
+                                
+                                # Update request log
+                                duration = time.time() - start_time
+                                await self.db.update_request_log_by_task_id(
+                                    task_id,
+                                    response_body=json.dumps({"error": error_msg, "status": "failed"}),
+                                    status_code=500,
+                                    duration=duration
+                                )
+                                
                                 raise Exception(error_msg)
 
                             elif status == "processing":
