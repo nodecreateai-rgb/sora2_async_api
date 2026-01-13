@@ -170,20 +170,9 @@ class SoraClient:
         payload = {"p": pow_token, "flow": self.SENTINEL_FLOW, "id": req_id}
         headers = {
             "Accept": "application/json, text/plain, */*",
-            "Accept-Encoding": "gzip, deflate, br, zstd",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Cache-Control": "no-cache",
             "Content-Type": "application/json",
             "Origin": "https://sora.chatgpt.com",
-            "Pragma": "no-cache",
-            "Priority": "u=1, i",
             "Referer": "https://sora.chatgpt.com/",
-            "Sec-Ch-Ua": '"Not_A Brand"; v="8", "Chromium"; v="120", "Safari"; v="17"',
-            "Sec-Ch-Ua-Mobile": "?1",
-            "Sec-Ch-Ua-Platform": '"ios"',
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
             "User-Agent": user_agent,
         }
         if token:
