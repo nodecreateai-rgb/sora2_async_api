@@ -5,6 +5,7 @@ import base64
 import time
 import random
 import re
+import uuid
 from typing import Optional, AsyncGenerator, Dict, Any, Tuple
 from datetime import datetime
 from .sora_client import SoraClient
@@ -573,6 +574,413 @@ class GenerationHandler:
                 status_code=500,
                 response_text=str(e)
             )
+
+    async def submit_character_creation_task(self, video_data: str) -> Tuple[str, str]:
+        """Submit a character creation task and return task_id immediately (async mode)
+        
+        This method submits the character creation task and starts background processing,
+        but returns immediately with the task_id. The caller can then poll the task status
+        using get_task_status.
+        
+        Args:
+            video_data: Base64 encoded video or video URL
+            
+        Returns:
+            Tuple of (task_id, task_type) where task_type is "character"
+            
+        Raises:
+            Exception: If no available tokens or other errors
+        """
+        # Retry logic with round-robin token selection
+        max_retries = config.max_retry_attempts
+        last_error = None
+        
+        for attempt in range(max_retries):
+            token_obj = None
+            try:
+                # Select token for video generation (character creation uses video tokens)
+                token_obj = await self.load_balancer.select_token(for_video_generation=True)
+                if not token_obj:
+                    raise Exception("No available tokens for character creation. All tokens are either disabled, cooling down, Sora2 quota exhausted, don't support Sora2, or expired.")
+                
+                # Acquire concurrency slot for video generation
+                if self.concurrency_manager:
+                    concurrency_acquired = await self.concurrency_manager.acquire_video(token_obj.id)
+                    if not concurrency_acquired:
+                        raise Exception(f"Failed to acquire concurrency slot for token {token_obj.id}")
+                
+                # Generate unique task_id
+                task_id = f"char_{uuid.uuid4().hex[:16]}"
+                
+                # Use default video model config
+                model_config = MODEL_CONFIG["sora2-landscape-10s"]
+                
+                # Save task to database
+                task = Task(
+                    task_id=task_id,
+                    token_id=token_obj.id,
+                    model="character-creation",
+                    prompt="",  # Character creation doesn't use prompt
+                    status="processing",
+                    progress=0.0
+                )
+                await self.db.create_task(task)
+                
+                # Create initial log entry
+                await self._log_request(
+                    token_obj.id,
+                    "character_only",
+                    {"type": "character_creation", "has_video": True},
+                    {},
+                    -1,
+                    -1.0,
+                    task_id=task_id
+                )
+                
+                # Record usage
+                await self.token_manager.record_usage(token_obj.id, is_video=True)
+                
+                # Start background character creation task
+                asyncio.create_task(self._handle_character_creation_background(
+                    task_id, video_data, model_config, token_obj.token, token_obj.id
+                ))
+                
+                return task_id, "character"
+                
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+                
+                # Release resources on error
+                if token_obj:
+                    if self.concurrency_manager:
+                        await self.concurrency_manager.release_video(token_obj.id)
+                    
+                    # Record error
+                    is_overload = "heavy_load" in error_str or "under heavy load" in error_str
+                    await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
+                
+                # Check if we should retry
+                non_retryable_errors = [
+                    "invalid model",
+                    "no available tokens",
+                    "no available pro tokens",
+                    "content policy violation"
+                ]
+                should_retry = attempt < max_retries - 1 and not any(err in error_str for err in non_retryable_errors)
+                
+                if not should_retry:
+                    raise e
+                
+                # Log retry attempt
+                debug_logger.log_info(f"Character creation task submission attempt {attempt + 1} failed: {str(e)}. Retrying...")
+                
+                # Wait a bit before retrying (exponential backoff for heavy_load)
+                if "heavy_load" in error_str or "under heavy load" in error_str:
+                    wait_time = min(2 ** attempt, 10)  # Max 10 seconds
+                    await asyncio.sleep(wait_time)
+        
+        # All retries exhausted
+        if last_error:
+            raise last_error
+
+    async def _handle_character_creation_background(self, task_id: str, video_data: str,
+                                                     model_config: Dict, token: str, token_id: int):
+        """Background task to handle character creation and update database"""
+        start_time = time.time()
+        try:
+            # Update task progress
+            await self.db.update_task(task_id, "processing", 10.0)
+            
+            # Handle video URL or bytes
+            # Note: video_data from route is already processed:
+            # - URL strings are passed as-is
+            # - base64 data URI has been converted to base64 string (without data: prefix)
+            if isinstance(video_data, str):
+                if video_data.startswith("http://") or video_data.startswith("https://"):
+                    # It's a URL, download it
+                    video_bytes = await self._download_file(video_data)
+                else:
+                    # It's a base64 encoded string (already processed by route)
+                    video_bytes = base64.b64decode(video_data)
+            else:
+                # Assume it's already bytes
+                video_bytes = video_data
+            
+            await self.db.update_task(task_id, "processing", 20.0)
+            
+            # Step 1: Upload video
+            cameo_id = await self.sora_client.upload_character_video(video_bytes, token)
+            debug_logger.log_info(f"Video uploaded, cameo_id: {cameo_id}")
+            await self.db.update_task(task_id, "processing", 30.0)
+            
+            # Step 2: Poll for character processing
+            cameo_status = await self._poll_cameo_status(cameo_id, token)
+            debug_logger.log_info(f"Cameo status: {cameo_status}")
+            await self.db.update_task(task_id, "processing", 50.0)
+            
+            # Extract character info
+            username_hint = cameo_status.get("username_hint", "character")
+            display_name = cameo_status.get("display_name_hint", "Character")
+            username = self._process_character_username(username_hint)
+            await self.db.update_task(task_id, "processing", 60.0)
+            
+            # Step 3: Download and cache avatar
+            profile_asset_url = cameo_status.get("profile_asset_url")
+            if not profile_asset_url:
+                raise Exception("Profile asset URL not found in cameo status")
+            
+            avatar_data = await self.sora_client.download_character_image(profile_asset_url)
+            debug_logger.log_info(f"Avatar downloaded, size: {len(avatar_data)} bytes")
+            await self.db.update_task(task_id, "processing", 70.0)
+            
+            # Step 4: Upload avatar
+            asset_pointer = await self.sora_client.upload_character_image(avatar_data, token)
+            debug_logger.log_info(f"Avatar uploaded, asset_pointer: {asset_pointer}")
+            await self.db.update_task(task_id, "processing", 80.0)
+            
+            # Step 5: Finalize character
+            instruction_set = cameo_status.get("instruction_set_hint") or cameo_status.get("instruction_set")
+            character_id = await self.sora_client.finalize_character(
+                cameo_id=cameo_id,
+                username=username,
+                display_name=display_name,
+                profile_asset_pointer=asset_pointer,
+                instruction_set=instruction_set,
+                token=token
+            )
+            debug_logger.log_info(f"Character finalized, character_id: {character_id}")
+            await self.db.update_task(task_id, "processing", 90.0)
+            
+            # Step 6: Set character as public
+            await self.sora_client.set_character_public(cameo_id, token)
+            debug_logger.log_info(f"Character set as public")
+            
+            # Log successful character creation
+            duration = time.time() - start_time
+            await self._log_request(
+                token_id=token_id,
+                operation="character_only",
+                request_data={
+                    "type": "character_creation",
+                    "has_video": True
+                },
+                response_data={
+                    "success": True,
+                    "username": username,
+                    "display_name": display_name,
+                    "character_id": character_id,
+                    "cameo_id": cameo_id
+                },
+                status_code=200,
+                duration=duration,
+                task_id=task_id
+            )
+            
+            # Update task with success result
+            result_data = {
+                "username": username,
+                "display_name": display_name,
+                "character_id": character_id,
+                "cameo_id": cameo_id
+            }
+            await self.db.update_task(
+                task_id, "completed", 100.0,
+                result_urls=json.dumps(result_data)
+            )
+            
+            # Record success
+            await self.token_manager.record_success(token_id, is_video=True)
+            
+            # Release resources
+            if self.concurrency_manager:
+                await self.concurrency_manager.release_video(token_id)
+            
+        except Exception as e:
+            # Record error
+            error_str = str(e).lower()
+            is_overload = "heavy_load" in error_str or "under heavy load" in error_str
+            await self.token_manager.record_error(token_id, is_overload=is_overload)
+            
+            # Update task status
+            await self.db.update_task(task_id, "failed", 0, error_message=str(e))
+            
+            # Update request log
+            duration = time.time() - start_time
+            await self._log_request(
+                token_id=token_id,
+                operation="character_only",
+                request_data={
+                    "type": "character_creation",
+                    "has_video": True
+                },
+                response_data={
+                    "success": False,
+                    "error": str(e)
+                },
+                status_code=500,
+                duration=duration,
+                task_id=task_id
+            )
+            
+            # Release resources
+            if self.concurrency_manager:
+                await self.concurrency_manager.release_video(token_id)
+            
+            debug_logger.log_error(
+                error_message=f"Background character creation failed for task {task_id}: {str(e)}",
+                status_code=500,
+                response_text=str(e)
+            )
+
+    async def create_character_sync(self, video_data: str, model_config: Dict) -> Dict[str, Any]:
+        """Create character synchronously and return result directly
+        
+        This method waits for character creation to complete and returns the result.
+        Used for async_mode where we want to wait for completion.
+        
+        Args:
+            video_data: Base64 encoded video or video URL
+            model_config: Model configuration dict
+            
+        Returns:
+            Dict containing character creation result:
+            {
+                "username": str,
+                "display_name": str,
+                "character_id": str,
+                "cameo_id": str
+            }
+            
+        Raises:
+            Exception: If character creation fails
+        """
+        token_obj = await self.load_balancer.select_token(for_video_generation=True)
+        if not token_obj:
+            raise Exception("No available tokens for character creation")
+
+        start_time = time.time()
+        try:
+            # Handle video URL or bytes
+            if isinstance(video_data, str):
+                if video_data.startswith("http://") or video_data.startswith("https://"):
+                    # It's a URL, download it
+                    video_bytes = await self._download_file(video_data)
+                else:
+                    # It's a base64 encoded string (already processed by route)
+                    video_bytes = base64.b64decode(video_data)
+            else:
+                # Assume it's already bytes
+                video_bytes = video_data
+
+            # Step 1: Upload video
+            cameo_id = await self.sora_client.upload_character_video(video_bytes, token_obj.token)
+            debug_logger.log_info(f"Video uploaded, cameo_id: {cameo_id}")
+
+            # Step 2: Poll for character processing
+            cameo_status = await self._poll_cameo_status(cameo_id, token_obj.token)
+            debug_logger.log_info(f"Cameo status: {cameo_status}")
+
+            # Extract character info
+            username_hint = cameo_status.get("username_hint", "character")
+            display_name = cameo_status.get("display_name_hint", "Character")
+            username = self._process_character_username(username_hint)
+
+            # Step 3: Download and cache avatar
+            profile_asset_url = cameo_status.get("profile_asset_url")
+            if not profile_asset_url:
+                raise Exception("Profile asset URL not found in cameo status")
+
+            avatar_data = await self.sora_client.download_character_image(profile_asset_url)
+            debug_logger.log_info(f"Avatar downloaded, size: {len(avatar_data)} bytes")
+
+            # Step 4: Upload avatar
+            asset_pointer = await self.sora_client.upload_character_image(avatar_data, token_obj.token)
+            debug_logger.log_info(f"Avatar uploaded, asset_pointer: {asset_pointer}")
+
+            # Step 5: Finalize character
+            instruction_set = cameo_status.get("instruction_set_hint") or cameo_status.get("instruction_set")
+            character_id = await self.sora_client.finalize_character(
+                cameo_id=cameo_id,
+                username=username,
+                display_name=display_name,
+                profile_asset_pointer=asset_pointer,
+                instruction_set=instruction_set,
+                token=token_obj.token
+            )
+            debug_logger.log_info(f"Character finalized, character_id: {character_id}")
+
+            # Step 6: Set character as public
+            await self.sora_client.set_character_public(cameo_id, token_obj.token)
+            debug_logger.log_info(f"Character set as public")
+
+            # Log successful character creation
+            duration = time.time() - start_time
+            await self._log_request(
+                token_id=token_obj.id,
+                operation="character_only",
+                request_data={
+                    "type": "character_creation",
+                    "has_video": True
+                },
+                response_data={
+                    "success": True,
+                    "username": username,
+                    "display_name": display_name,
+                    "character_id": character_id,
+                    "cameo_id": cameo_id
+                },
+                status_code=200,
+                duration=duration
+            )
+
+            # Record success
+            await self.token_manager.record_success(token_obj.id, is_video=True)
+
+            # Release resources
+            if self.concurrency_manager:
+                await self.concurrency_manager.release_video(token_obj.id)
+
+            return {
+                "username": username,
+                "display_name": display_name,
+                "character_id": character_id,
+                "cameo_id": cameo_id
+            }
+
+        except Exception as e:
+            # Record error
+            error_str = str(e).lower()
+            is_overload = "heavy_load" in error_str or "under heavy load" in error_str
+            await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
+
+            # Log failed character creation
+            duration = time.time() - start_time
+            await self._log_request(
+                token_id=token_obj.id,
+                operation="character_only",
+                request_data={
+                    "type": "character_creation",
+                    "has_video": True
+                },
+                response_data={
+                    "success": False,
+                    "error": str(e)
+                },
+                status_code=500,
+                duration=duration
+            )
+
+            # Release resources
+            if self.concurrency_manager:
+                await self.concurrency_manager.release_video(token_obj.id)
+
+            debug_logger.log_error(
+                error_message=f"Character creation failed: {str(e)}",
+                status_code=500,
+                response_text=str(e)
+            )
+            raise
 
     async def handle_generation(self, model: str, prompt: str,
                                image: Optional[str] = None,

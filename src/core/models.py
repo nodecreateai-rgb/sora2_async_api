@@ -214,6 +214,7 @@ class CharacterCreateRequest(BaseModel):
     """创建角色请求"""
     video: str  # Base64 encoded video or video URL
     stream: bool = False
+    async_mode: bool = False  # 异步模式：立即返回task_id，不等待结果，通过 /v1/tasks/{task_id} 查询状态
 
 class CharacterGenerateRequest(BaseModel):
     """角色生成视频请求"""

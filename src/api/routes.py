@@ -1019,6 +1019,10 @@ async def create_character(
     api_key: str = Depends(verify_api_key_header)
 ):
     """创建角色 - 上传视频提取角色信息"""
+    # 检查 generation_handler 是否已初始化
+    if generation_handler is None:
+        raise HTTPException(status_code=500, detail="Generation handler not initialized")
+    
     try:
         # 提取视频数据（支持 base64 或 URL）
         video_data = request.video
@@ -1030,6 +1034,18 @@ async def create_character(
             if "base64," in video_data:
                 video_data = video_data.split("base64,", 1)[1]
         
+        # 异步模式：立即返回 task_id
+        if request.async_mode:
+            task_id, task_type = await generation_handler.submit_character_creation_task(
+                video_data=video_data
+            )
+            return JSONResponse(content={
+                "task_id": task_id,
+                "task_type": task_type,
+                "status": "processing",
+                "message": "Task submitted successfully. Use GET /v1/tasks/{task_id} to check status."
+            })
+        
         # 使用默认的视频模型配置
         model_config = MODEL_CONFIG["sora2-landscape-10s"]
         
@@ -1037,12 +1053,14 @@ async def create_character(
         if request.stream:
             async def generate():
                 try:
+                    # 确保生成器立即开始产生数据
                     async for chunk in generation_handler._handle_character_creation_only(
                         video_data=video_data,
                         model_config=model_config
                     ):
                         yield chunk
                 except Exception as e:
+                    # 确保错误也被正确发送
                     error_response = {
                         "error": {
                             "message": str(e),
@@ -1054,6 +1072,9 @@ async def create_character(
                     error_chunk = f'data: {json.dumps(error_response)}\n\n'
                     yield error_chunk
                     yield 'data: [DONE]\n\n'
+                finally:
+                    # 确保流式响应正确结束
+                    pass
             
             return StreamingResponse(
                 generate(),
@@ -1080,15 +1101,39 @@ async def create_character(
     except HTTPException:
         raise
     except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={
+        # 如果是在流式响应之前出错，返回 JSON 响应
+        if not request.stream:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "error": {
+                        "message": str(e),
+                        "type": "server_error",
+                        "param": None,
+                        "code": None
+                    }
+                }
+            )
+        # 如果是在流式响应中出错，需要通过生成器处理
+        async def error_generate():
+            error_response = {
                 "error": {
                     "message": str(e),
                     "type": "server_error",
                     "param": None,
                     "code": None
                 }
+            }
+            yield f'data: {json.dumps(error_response)}\n\n'
+            yield 'data: [DONE]\n\n'
+        
+        return StreamingResponse(
+            error_generate(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
             }
         )
 
