@@ -578,7 +578,7 @@ class GenerationHandler:
                 response_text=str(e)
             )
 
-    async def submit_character_creation_task(self, video_data: str) -> Tuple[str, str]:
+    async def submit_character_creation_task(self, video_data: str, timestamps: str = "0,3") -> Tuple[str, str]:
         """Submit a character creation task and return task_id immediately (async mode)
         
         This method submits the character creation task and starts background processing,
@@ -587,6 +587,7 @@ class GenerationHandler:
         
         Args:
             video_data: Base64 encoded video or video URL
+            timestamps: Video timestamps in format "start,end" (e.g., "0,3" for 0 to 3 seconds)
             
         Returns:
             Tuple of (task_id, task_type) where task_type is "character"
@@ -681,7 +682,7 @@ class GenerationHandler:
                 # If background task fails to start, mark task as failed but don't retry
                 try:
                     asyncio.create_task(self._handle_character_creation_background(
-                        task_id, video_data, model_config, token_obj.token, token_obj.id
+                        task_id, video_data, model_config, token_obj.token, token_obj.id, timestamps
                     ))
                 except Exception as bg_error:
                     # If background task fails to start, mark task as failed
@@ -767,7 +768,7 @@ class GenerationHandler:
             raise last_error
 
     async def _handle_character_creation_background(self, task_id: str, video_data: str,
-                                                     model_config: Dict, token: str, token_id: int):
+                                                     model_config: Dict, token: str, token_id: int, timestamps: str = "0,3"):
         """Background task to handle character creation and update database"""
         start_time = time.time()
         try:
@@ -792,7 +793,7 @@ class GenerationHandler:
             await self.db.update_task(task_id, "processing", 20.0)
             
             # Step 1: Upload video
-            cameo_id = await self.sora_client.upload_character_video(video_bytes, token)
+            cameo_id = await self.sora_client.upload_character_video(video_bytes, token, timestamps)
             debug_logger.log_info(f"Video uploaded, cameo_id: {cameo_id}")
             await self.db.update_task(task_id, "processing", 30.0)
             
@@ -915,7 +916,7 @@ class GenerationHandler:
                 response_text=str(e)
             )
 
-    async def create_character_sync(self, video_data: str, model_config: Dict) -> Dict[str, Any]:
+    async def create_character_sync(self, video_data: str, model_config: Dict, timestamps: str = "0,3") -> Dict[str, Any]:
         """Create character synchronously and return result directly
         
         This method waits for character creation to complete and returns the result.
@@ -924,6 +925,7 @@ class GenerationHandler:
         Args:
             video_data: Base64 encoded video or video URL
             model_config: Model configuration dict
+            timestamps: Video timestamps in format "start,end" (e.g., "0,3" for 0 to 3 seconds)
             
         Returns:
             Dict containing character creation result:
@@ -956,7 +958,7 @@ class GenerationHandler:
                 video_bytes = video_data
 
             # Step 1: Upload video
-            cameo_id = await self.sora_client.upload_character_video(video_bytes, token_obj.token)
+            cameo_id = await self.sora_client.upload_character_video(video_bytes, token_obj.token, timestamps)
             debug_logger.log_info(f"Video uploaded, cameo_id: {cameo_id}")
 
             # Step 2: Poll for character processing
@@ -2163,7 +2165,7 @@ class GenerationHandler:
 
     # ==================== Character Creation and Remix Handlers ====================
 
-    async def _handle_character_creation_only(self, video_data, model_config: Dict) -> AsyncGenerator[str, None]:
+    async def _handle_character_creation_only(self, video_data, model_config: Dict, timestamps: str = "0,3") -> AsyncGenerator[str, None]:
         """Handle character creation only (no video generation)
 
         Flow:
@@ -2175,6 +2177,11 @@ class GenerationHandler:
         6. Finalize character
         7. Set character as public
         8. Return success message
+        
+        Args:
+            video_data: Video data (URL string or bytes)
+            model_config: Model configuration dict
+            timestamps: Video timestamps in format "start,end" (e.g., "0,3" for 0 to 3 seconds)
         """
         token_obj = await self.load_balancer.select_token(for_video_generation=True)
         if not token_obj:
@@ -2201,7 +2208,7 @@ class GenerationHandler:
             yield self._format_stream_chunk(
                 reasoning_content="Uploading video file...\n"
             )
-            cameo_id = await self.sora_client.upload_character_video(video_bytes, token_obj.token)
+            cameo_id = await self.sora_client.upload_character_video(video_bytes, token_obj.token, timestamps)
             debug_logger.log_info(f"Video uploaded, cameo_id: {cameo_id}")
 
             # Step 2: Poll for character processing
@@ -2317,7 +2324,7 @@ class GenerationHandler:
             )
             raise
 
-    async def _handle_character_and_video_generation(self, video_data, prompt: str, model_config: Dict) -> AsyncGenerator[str, None]:
+    async def _handle_character_and_video_generation(self, video_data, prompt: str, model_config: Dict, timestamps: str = "0,3") -> AsyncGenerator[str, None]:
         """Handle character creation and video generation
 
         Flow:
@@ -2330,6 +2337,12 @@ class GenerationHandler:
         7. Generate video with character (@username + prompt)
         8. Delete character
         9. Return video result
+        
+        Args:
+            video_data: Video data (URL string or bytes)
+            prompt: Video generation prompt
+            model_config: Model configuration dict
+            timestamps: Video timestamps in format "start,end" (e.g., "0,3" for 0 to 3 seconds)
         """
         token_obj = await self.load_balancer.select_token(for_video_generation=True)
         if not token_obj:
@@ -2360,7 +2373,7 @@ class GenerationHandler:
             yield self._format_stream_chunk(
                 reasoning_content="Uploading video file...\n"
             )
-            cameo_id = await self.sora_client.upload_character_video(video_bytes, token_obj.token)
+            cameo_id = await self.sora_client.upload_character_video(video_bytes, token_obj.token, timestamps)
             debug_logger.log_info(f"Video uploaded, cameo_id: {cameo_id}")
 
             # Step 2: Poll for character processing

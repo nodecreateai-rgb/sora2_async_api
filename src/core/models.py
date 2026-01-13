@@ -215,6 +215,7 @@ class CharacterCreateRequest(BaseModel):
     video: str  # Base64 encoded video or video URL
     stream: bool = False
     async_mode: bool = False  # 异步模式：立即返回task_id，不等待结果，通过 /v1/tasks/{task_id} 查询状态
+    timestamps: Optional[str] = "0,3"  # 视频时间戳，格式如 "0,3" 表示从0秒到3秒
 
 class CharacterGenerateRequest(BaseModel):
     """角色生成视频请求"""
@@ -222,6 +223,7 @@ class CharacterGenerateRequest(BaseModel):
     video: str  # Base64 encoded video or video URL
     model: str = "sora2-landscape-10s"  # sora2-* models
     stream: bool = False
+    timestamps: Optional[str] = "0,3"  # 视频时间戳，格式如 "0,3" 表示从0秒到3秒
 
 class TaskStatusResponse(BaseModel):
     """任务状态响应"""

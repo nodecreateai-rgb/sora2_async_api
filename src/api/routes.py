@@ -1048,7 +1048,8 @@ async def create_character(
         # 异步模式：立即返回 task_id
         if request.async_mode:
             task_id, task_type = await generation_handler.submit_character_creation_task(
-                video_data=video_data
+                video_data=video_data,
+                timestamps=request.timestamps
             )
             return JSONResponse(content={
                 "task_id": task_id,
@@ -1067,7 +1068,8 @@ async def create_character(
                     # 确保生成器立即开始产生数据
                     async for chunk in generation_handler._handle_character_creation_only(
                         video_data=video_data,
-                        model_config=model_config
+                        model_config=model_config,
+                        timestamps=request.timestamps
                     ):
                         yield chunk
                 except Exception as e:
@@ -1180,7 +1182,8 @@ async def generate_character_video(
                     async for chunk in generation_handler._handle_character_and_video_generation(
                         video_data=video_data,
                         prompt=request.prompt,
-                        model_config=model_config
+                        model_config=model_config,
+                        timestamps=request.timestamps
                     ):
                         yield chunk
                 except Exception as e:
