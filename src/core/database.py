@@ -689,7 +689,8 @@ class Database:
             return log_id
 
     async def update_request_log(self, log_id: int, response_body: Optional[str] = None,
-                                 status_code: Optional[int] = None, duration: Optional[float] = None):
+                                 status_code: Optional[int] = None, duration: Optional[float] = None,
+                                 token_id: Optional[int] = None, task_id: Optional[str] = None):
         """Update request log with completion data"""
         pool = await self._get_pool()
         async with pool.acquire() as conn:
@@ -708,6 +709,14 @@ class Database:
             if duration is not None:
                 updates.append(f"duration = ${param_num}")
                 params.append(duration)
+                param_num += 1
+            if token_id is not None:
+                updates.append(f"token_id = ${param_num}")
+                params.append(token_id)
+                param_num += 1
+            if task_id is not None:
+                updates.append(f"task_id = ${param_num}")
+                params.append(task_id)
                 param_num += 1
 
             if updates:

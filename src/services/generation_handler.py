@@ -648,6 +648,17 @@ class GenerationHandler:
         max_retries = config.max_retry_attempts
         last_error = None
         
+        # Create initial log entry before retry loop (only once)
+        log_id = await self._log_request(
+            None,  # token_id will be set when we select token
+            f"generate_{model_config['type']}",
+            {"model": model, "prompt": prompt, "has_image": image is not None},
+            {},  # Empty response initially
+            -1,  # -1 means in-progress
+            -1.0,  # -1.0 means in-progress
+            task_id=None  # task_id will be set when we create task
+        )
+        
         for attempt in range(max_retries):
             try:
                 # Check if model requires Pro subscription
@@ -698,7 +709,7 @@ class GenerationHandler:
                         reasoning_content=f"**Retry Attempt {attempt + 1}/{max_retries}**\n\nRetrying with a different token...\n"
                     )
 
-                # Proceed with generation
+                # Proceed with generation (pass log_id to reuse existing log)
                 async for chunk in self._execute_generation(
                     model=model,
                     prompt=prompt,
@@ -710,7 +721,8 @@ class GenerationHandler:
                     is_video=is_video,
                     token_obj=token_obj,
                     stream=stream,
-                    start_time=start_time
+                    start_time=start_time,
+                    log_id=log_id  # Pass existing log_id
                 ):
                     yield chunk
                 
@@ -745,7 +757,15 @@ class GenerationHandler:
                 should_retry = attempt < max_retries - 1 and not any(err in error_str for err in non_retryable_errors)
                 
                 if not should_retry:
-                    # Last attempt or non-retryable error - raise exception
+                    # Last attempt or non-retryable error - update log and raise exception
+                    if log_id and start_time:
+                        duration = time.time() - start_time
+                        await self.db.update_request_log(
+                            log_id,
+                            response_body=json.dumps({"error": str(e)}),
+                            status_code=500,
+                            duration=duration
+                        )
                     raise e
                 
                 # Log retry attempt
@@ -753,6 +773,14 @@ class GenerationHandler:
         
         # All retries exhausted
         if last_error:
+            if log_id and start_time:
+                duration = time.time() - start_time
+                await self.db.update_request_log(
+                    log_id,
+                    response_body=json.dumps({"error": str(last_error)}),
+                    status_code=500,
+                    duration=duration
+                )
             raise last_error
 
     async def _execute_generation(self, model: str, prompt: str,
@@ -764,7 +792,8 @@ class GenerationHandler:
                                   is_video: bool = False,
                                   token_obj = None,
                                   stream: bool = True,
-                                  start_time: float = None) -> AsyncGenerator[str, None]:
+                                  start_time: float = None,
+                                  log_id: Optional[int] = None) -> AsyncGenerator[str, None]:
         """Execute generation with the selected token
         
         Args:
@@ -883,16 +912,26 @@ class GenerationHandler:
             )
             await self.db.create_task(task)
 
-            # Create initial log entry (status_code=-1, duration=-1.0 means in-progress)
-            log_id = await self._log_request(
-                token_obj.id,
-                f"generate_{model_config['type']}",
-                {"model": model, "prompt": prompt, "has_image": image is not None},
-                {},  # Empty response initially
-                -1,  # -1 means in-progress
-                -1.0,  # -1.0 means in-progress
-                task_id=task_id
-            )
+            # Update existing log entry with token_id and task_id (if log_id provided)
+            # Otherwise create new log entry
+            if log_id:
+                # Update existing log with token_id and task_id
+                await self.db.update_request_log(
+                    log_id,
+                    token_id=token_obj.id,
+                    task_id=task_id
+                )
+            else:
+                # Create initial log entry (status_code=-1, duration=-1.0 means in-progress)
+                log_id = await self._log_request(
+                    token_obj.id,
+                    f"generate_{model_config['type']}",
+                    {"model": model, "prompt": prompt, "has_image": image is not None},
+                    {},  # Empty response initially
+                    -1,  # -1 means in-progress
+                    -1.0,  # -1.0 means in-progress
+                    task_id=task_id
+                )
 
             # Record usage
             await self.token_manager.record_usage(token_obj.id, is_video=is_video)
