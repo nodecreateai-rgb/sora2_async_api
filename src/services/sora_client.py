@@ -65,54 +65,19 @@ class SoraClient:
             debug_logger.logger.error(f"Failed to initialize UserAgent: {e}, using fallback")
             self.ua = None
     
-    def _get_random_user_agent(self, mobile: bool = False) -> str:
-        """Get a random user-agent string
-        
-        Args:
-            mobile: If True, return mobile user-agent (Android/iOS), otherwise desktop
-        """
+    def _get_random_user_agent(self) -> str:
+        """Get a random user-agent string"""
         try:
             if self.ua:
-                if mobile:
-                    # Randomly choose between Android and iOS
-                    if random.choice([True, False]):
-                        # Android Chrome
-                        return self.ua.android
-                    else:
-                        # iOS Safari
-                        return self.ua.ios
-                else:
-                    # Randomly choose between Chrome, Firefox, Safari, Edge
-                    browsers = ['chrome', 'firefox', 'safari', 'edge']
-                    browser = random.choice(browsers)
-                    return getattr(self.ua, browser)
+                # Try to get Chrome user-agent (most common)
+                return self.ua.chrome
             else:
-                # Fallback user-agents
-                if mobile:
-                    # Randomly choose mobile fallback
-                    mobile_agents = [
-                        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-                        "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
-                        "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-                        "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-                    ]
-                    return random.choice(mobile_agents)
-                else:
-                    # Desktop fallback
-                    desktop_agents = [
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                    ]
-                    return random.choice(desktop_agents)
+                # Fallback to a common Chrome user-agent
+                return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         except Exception as e:
             # If UserAgent fails, use fallback
             debug_logger.logger.error(f"Failed to get random user-agent: {e}, using fallback")
-            if mobile:
-                return "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-            else:
-                return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
     @staticmethod
     def _get_pow_parse_time() -> str:
@@ -217,10 +182,8 @@ class SoraClient:
         通过调用 /backend-api/sentinel/req 接口并解决 PoW
         """
         req_id = str(uuid4())
-        # Use random user-agent for each request (randomly choose desktop or mobile)
-        # Use mobile user-agent 30% of the time to add more variety
-        use_mobile = random.random() < 0.3
-        user_agent = self._get_random_user_agent(mobile=use_mobile)
+        # Use random user-agent for each request
+        user_agent = self._get_random_user_agent()
         pow_token = self._get_pow_token(user_agent)
 
         proxy_url = await self.proxy_manager.get_proxy_url()
@@ -358,10 +321,8 @@ class SoraClient:
         """
         proxy_url = await self.proxy_manager.get_proxy_url(token_id)
 
-        # Generate random user-agent for each request (randomly choose desktop or mobile)
-        # Use mobile user-agent 30% of the time to add more variety
-        use_mobile = random.random() < 0.3
-        user_agent = self._get_random_user_agent(mobile=use_mobile)
+        # Generate random user-agent for each request
+        user_agent = self._get_random_user_agent()
 
         headers = {
             "Authorization": f"Bearer {token}",
