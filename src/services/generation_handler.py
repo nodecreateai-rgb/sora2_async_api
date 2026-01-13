@@ -922,17 +922,16 @@ class GenerationHandler:
                     task_id=task_id
                 )
             else:
-            # Create initial log entry (status_code=-1, duration=-1.0 means in-progress)
-            log_id = await self._log_request(
-                token_obj.id,
-                f"generate_{model_config['type']}",
-                {"model": model, "prompt": prompt, "has_image": image is not None},
-                {},  # Empty response initially
-                -1,  # -1 means in-progress
-                -1.0,  # -1.0 means in-progress
-                task_id=task_id
-            )
-
+                # Create initial log entry (status_code=-1, duration=-1.0 means in-progress)
+                log_id = await self._log_request(
+                    token_obj.id,
+                    f"generate_{model_config['type']}",
+                    {"model": model, "prompt": prompt, "has_image": image is not None},
+                    {},  # Empty response initially
+                    -1,  # -1 means in-progress
+                    -1.0,  # -1.0 means in-progress
+                    task_id=task_id
+                )
             # Record usage
             await self.token_manager.record_usage(token_obj.id, is_video=is_video)
             
