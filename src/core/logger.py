@@ -15,9 +15,9 @@ class DebugLogger:
     
     def _setup_logger(self):
         """Setup file logger"""
-        # Clear log file on startup
-        if self.log_file.exists():
-            self.log_file.unlink()
+        # Don't clear log file on startup - keep appending to existing logs
+        # if self.log_file.exists():
+        #     self.log_file.unlink()
 
         # Create logger
         self.logger = logging.getLogger("debug_logger")
@@ -241,6 +241,153 @@ class DebugLogger:
             self.logger.info(f"ℹ️  [{self._format_timestamp()}] {message}")
         except Exception as e:
             self.logger.error(f"Error logging info: {e}")
+    
+    def log_api_request(
+        self,
+        method: str,
+        path: str,
+        headers: Dict[str, str],
+        body: Optional[Any] = None,
+        client_ip: Optional[str] = None
+    ):
+        """Log API request - always logs regardless of debug_enabled"""
+        try:
+            self._write_separator()
+            self.logger.info(f"🔵 [API REQUEST] {self._format_timestamp()}")
+            self._write_separator("-")
+            
+            # Basic info
+            self.logger.info(f"Method: {method}")
+            self.logger.info(f"Path: {path}")
+            if client_ip:
+                self.logger.info(f"Client IP: {client_ip}")
+            
+            # Headers (mask sensitive info)
+            self.logger.info("\n📋 Headers:")
+            masked_headers = dict(headers)
+            if "Authorization" in masked_headers:
+                auth_value = masked_headers["Authorization"]
+                if auth_value.startswith("Bearer "):
+                    token = auth_value[7:]
+                    masked_headers["Authorization"] = f"Bearer {self._mask_token(token)}"
+            
+            for key, value in masked_headers.items():
+                self.logger.info(f"  {key}: {value}")
+            
+            # Body
+            if body is not None:
+                self.logger.info("\n📦 Request Body:")
+                if isinstance(body, (dict, list)):
+                    body_str = json.dumps(body, indent=2, ensure_ascii=False)
+                    # Limit body size for very large requests
+                    if len(body_str) > 5000:
+                        self.logger.info(f"{body_str[:5000]}... (truncated)")
+                    else:
+                        self.logger.info(body_str)
+                else:
+                    body_str = str(body)
+                    if len(body_str) > 5000:
+                        self.logger.info(f"{body_str[:5000]}... (truncated)")
+                    else:
+                        self.logger.info(body_str)
+            
+            self._write_separator()
+            self.logger.info("")  # Empty line
+            
+        except Exception as e:
+            self.logger.error(f"Error logging API request: {e}")
+    
+    def log_api_response(
+        self,
+        status_code: int,
+        path: str,
+        headers: Dict[str, str],
+        body: Any,
+        duration_ms: Optional[float] = None
+    ):
+        """Log API response - always logs regardless of debug_enabled"""
+        try:
+            self._write_separator()
+            self.logger.info(f"🟢 [API RESPONSE] {self._format_timestamp()}")
+            self._write_separator("-")
+            
+            # Status
+            status_emoji = "✅" if 200 <= status_code < 300 else "❌"
+            self.logger.info(f"Path: {path}")
+            self.logger.info(f"Status: {status_code} {status_emoji}")
+            
+            # Duration
+            if duration_ms is not None:
+                self.logger.info(f"Duration: {duration_ms:.2f}ms")
+            
+            # Headers
+            self.logger.info("\n📋 Response Headers:")
+            for key, value in headers.items():
+                self.logger.info(f"  {key}: {value}")
+            
+            # Body
+            self.logger.info("\n📦 Response Body:")
+            if isinstance(body, (dict, list)):
+                body_str = json.dumps(body, indent=2, ensure_ascii=False)
+                # Limit body size for very large responses
+                if len(body_str) > 5000:
+                    self.logger.info(f"{body_str[:5000]}... (truncated)")
+                else:
+                    self.logger.info(body_str)
+            elif isinstance(body, str):
+                # Try to parse as JSON
+                try:
+                    parsed = json.loads(body)
+                    body_str = json.dumps(parsed, indent=2, ensure_ascii=False)
+                    if len(body_str) > 5000:
+                        self.logger.info(f"{body_str[:5000]}... (truncated)")
+                    else:
+                        self.logger.info(body_str)
+                except:
+                    # Not JSON, log as text (limit length)
+                    if len(body) > 5000:
+                        self.logger.info(f"{body[:5000]}... (truncated)")
+                    else:
+                        self.logger.info(body)
+            else:
+                body_str = str(body)
+                if len(body_str) > 5000:
+                    self.logger.info(f"{body_str[:5000]}... (truncated)")
+                else:
+                    self.logger.info(body_str)
+            
+            self._write_separator()
+            self.logger.info("")  # Empty line
+            
+        except Exception as e:
+            self.logger.error(f"Error logging API response: {e}")
+    
+    def log_api_error(
+        self,
+        path: str,
+        error_message: str,
+        status_code: Optional[int] = None,
+        client_ip: Optional[str] = None
+    ):
+        """Log API error - always logs regardless of debug_enabled"""
+        try:
+            self._write_separator()
+            self.logger.info(f"🔴 [API ERROR] {self._format_timestamp()}")
+            self._write_separator("-")
+            
+            self.logger.info(f"Path: {path}")
+            if client_ip:
+                self.logger.info(f"Client IP: {client_ip}")
+            if status_code:
+                self.logger.info(f"Status Code: {status_code}")
+            
+            self.logger.info(f"Error Message: {error_message}")
+            
+            self._write_separator()
+            self.logger.info("")  # Empty line
+            
+        except Exception as e:
+            self.logger.error(f"Error logging API error: {e}")
 
 # Global debug logger instance
 debug_logger = DebugLogger()

@@ -122,6 +122,10 @@ async def create_chat_completion(
 ):
     """Create chat completion (unified endpoint for image and video generation)"""
     try:
+        # 检查 generation_handler 是否已初始化
+        if generation_handler is None:
+            raise HTTPException(status_code=500, detail="Generation handler not initialized")
+        
         # Extract prompt from messages
         if not request.messages:
             raise HTTPException(status_code=400, detail="Messages cannot be empty")
@@ -314,6 +318,10 @@ async def generate_image(
 ):
     """文生图 - 根据文本描述生成图片"""
     try:
+        # 检查 generation_handler 是否已初始化
+        if generation_handler is None:
+            raise HTTPException(status_code=500, detail="Generation handler not initialized")
+        
         # 验证模型
         if request.model not in MODEL_CONFIG:
             raise HTTPException(status_code=400, detail=f"Invalid model: {request.model}")
@@ -536,6 +544,10 @@ async def generate_video(
 ):
     """文生视频 - 根据文本描述生成视频"""
     try:
+        # 检查 generation_handler 是否已初始化
+        if generation_handler is None:
+            raise HTTPException(status_code=500, detail="Generation handler not initialized")
+        
         # 验证模型
         if request.model not in MODEL_CONFIG:
             raise HTTPException(status_code=400, detail=f"Invalid model: {request.model}")
