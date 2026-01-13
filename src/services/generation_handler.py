@@ -618,41 +618,115 @@ class GenerationHandler:
                 # Use default video model config
                 model_config = MODEL_CONFIG["sora2-landscape-10s"]
                 
-                # Save task to database
-                task = Task(
-                    task_id=task_id,
-                    token_id=token_obj.id,
-                    model="character-creation",
-                    prompt="",  # Character creation doesn't use prompt
-                    status="processing",
-                    progress=0.0
-                )
-                await self.db.create_task(task)
+                # Save task to database first (must succeed before returning task_id)
+                try:
+                    task = Task(
+                        task_id=task_id,
+                        token_id=token_obj.id,
+                        model="character-creation",
+                        prompt="",  # Character creation doesn't use prompt
+                        status="processing",
+                        progress=0.0
+                    )
+                    await self.db.create_task(task)
+                    debug_logger.log_info(f"Character creation task {task_id} created successfully")
+                except Exception as db_error:
+                    error_str = str(db_error).lower()
+                    # Check if task already exists (unique constraint violation)
+                    if "unique" in error_str or "duplicate" in error_str:
+                        # Task already exists, check if we can use it
+                        existing_task = await self.db.get_task(task_id)
+                        if existing_task:
+                            debug_logger.log_info(f"Task {task_id} already exists, reusing existing task")
+                            # Task exists, continue with existing task
+                        else:
+                            # Task doesn't exist but got unique error - this is strange, raise error
+                            debug_logger.log_error(
+                                error_message=f"Unique constraint error but task {task_id} not found: {str(db_error)}",
+                                status_code=500,
+                                response_text=str(db_error)
+                            )
+                            raise Exception(f"Failed to create task in database: {str(db_error)}")
+                    else:
+                        # Other database error
+                        debug_logger.log_error(
+                            error_message=f"Failed to create task {task_id} in database: {str(db_error)}",
+                            status_code=500,
+                            response_text=str(db_error)
+                        )
+                        raise Exception(f"Failed to create task in database: {str(db_error)}")
                 
-                # Create initial log entry
-                await self._log_request(
-                    token_obj.id,
-                    "character_only",
-                    {"type": "character_creation", "has_video": True},
-                    {},
-                    -1,
-                    -1.0,
-                    task_id=task_id
-                )
+                # Create initial log entry (non-critical, don't fail if this fails)
+                try:
+                    await self._log_request(
+                        token_obj.id,
+                        "character_only",
+                        {"type": "character_creation", "has_video": True},
+                        {},
+                        -1,
+                        -1.0,
+                        task_id=task_id
+                    )
+                except Exception as log_error:
+                    debug_logger.log_info(f"Failed to create initial log for task {task_id}: {str(log_error)}")
                 
-                # Record usage
-                await self.token_manager.record_usage(token_obj.id, is_video=True)
+                # Record usage (non-critical, don't fail if this fails)
+                try:
+                    await self.token_manager.record_usage(token_obj.id, is_video=True)
+                except Exception as usage_error:
+                    debug_logger.log_info(f"Failed to record usage for task {task_id}: {str(usage_error)}")
                 
                 # Start background character creation task
-                asyncio.create_task(self._handle_character_creation_background(
-                    task_id, video_data, model_config, token_obj.token, token_obj.id
-                ))
+                # Note: Once task is created, we should not retry - task is already in database
+                # If background task fails to start, mark task as failed but don't retry
+                try:
+                    asyncio.create_task(self._handle_character_creation_background(
+                        task_id, video_data, model_config, token_obj.token, token_obj.id
+                    ))
+                except Exception as bg_error:
+                    # If background task fails to start, mark task as failed
+                    debug_logger.log_error(
+                        error_message=f"Failed to start background task for {task_id}: {str(bg_error)}",
+                        status_code=500,
+                        response_text=str(bg_error)
+                    )
+                    try:
+                        await self.db.update_task(task_id, "failed", 0, error_message=f"Failed to start background task: {str(bg_error)}")
+                    except Exception as update_error:
+                        debug_logger.log_error(
+                            error_message=f"Failed to update task {task_id} status: {str(update_error)}",
+                            status_code=500,
+                            response_text=str(update_error)
+                        )
+                    # Don't raise exception - task is already created, return task_id
+                    # The task will be marked as failed in database
                 
+                # Task created successfully, return task_id (even if background task failed to start)
                 return task_id, "character"
                 
             except Exception as e:
                 last_error = e
                 error_str = str(e).lower()
+                
+                # Check if task was already created before this error
+                task_created = False
+                if 'task_id' in locals():
+                    # Try to check if task exists in database
+                    try:
+                        existing_task = await self.db.get_task(task_id)
+                        if existing_task:
+                            task_created = True
+                            # Task exists, mark it as failed and don't retry
+                            debug_logger.log_info(f"Task {task_id} already exists, marking as failed due to error: {str(e)}")
+                            try:
+                                await self.db.update_task(task_id, "failed", 0, error_message=str(e))
+                            except:
+                                pass
+                            # Return the task_id even though there was an error
+                            # This ensures the client can query the task status
+                            return task_id, "character"
+                    except:
+                        pass
                 
                 # Release resources on error
                 if token_obj:
@@ -663,12 +737,17 @@ class GenerationHandler:
                     is_overload = "heavy_load" in error_str or "under heavy load" in error_str
                     await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
                 
+                # If task was created, don't retry - return the task_id
+                if task_created:
+                    return task_id, "character"
+                
                 # Check if we should retry
                 non_retryable_errors = [
                     "invalid model",
                     "no available tokens",
                     "no available pro tokens",
-                    "content policy violation"
+                    "content policy violation",
+                    "failed to create task in database"  # Don't retry if task creation failed
                 ]
                 should_retry = attempt < max_retries - 1 and not any(err in error_str for err in non_retryable_errors)
                 
