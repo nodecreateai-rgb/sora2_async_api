@@ -1231,8 +1231,9 @@ class TokenManager:
             # 📍 Step 8: 处理刷新结果
             if new_at:
                 # 刷新成功: 更新Token
+                # 使用 skip_status_update=True 避免在自动刷新时频繁调用 subscriptions API
                 debug_logger.log_info(f"[AUTO_REFRESH] 💾 Token {token_id}: 保存新的 Access Token...")
-                await self.update_token(token_id, token=new_at, st=new_st, rt=new_rt)
+                await self.update_token(token_id, token=new_at, st=new_st, rt=new_rt, skip_status_update=True)
 
                 # 获取更新后的Token信息
                 updated_token = await self.db.get_token(token_id)
