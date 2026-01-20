@@ -23,9 +23,6 @@ db: Database = None
 generation_handler = None
 concurrency_manager: ConcurrencyManager = None
 
-# Store active admin tokens (in production, use Redis or database)
-active_admin_tokens = set()
-
 def set_dependencies(tm: TokenManager, pm: ProxyManager, database: Database, gh=None, cm: ConcurrencyManager = None):
     """Set dependencies"""
     global token_manager, proxy_manager, db, generation_handler, concurrency_manager
@@ -35,7 +32,7 @@ def set_dependencies(tm: TokenManager, pm: ProxyManager, database: Database, gh=
     generation_handler = gh
     concurrency_manager = cm
 
-def verify_admin_token(authorization: str = Header(None)):
+async def verify_admin_token(authorization: str = Header(None)):
     """Verify admin token from Authorization header"""
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing authorization header")
@@ -45,8 +42,13 @@ def verify_admin_token(authorization: str = Header(None)):
     if authorization.startswith("Bearer "):
         token = authorization[7:]
 
-    if token not in active_admin_tokens:
+    # Check token in database
+    session = await db.get_admin_session(token)
+    if not session:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
+    
+    # Update last used time
+    await db.update_admin_session_last_used(token)
 
     return token
 
@@ -153,8 +155,10 @@ async def login(request: LoginRequest):
     if AuthManager.verify_admin(request.username, request.password):
         # Generate simple token
         token = f"admin-{secrets.token_urlsafe(32)}"
-        # Store token in active tokens
-        active_admin_tokens.add(token)
+        # Store token in database (expires in 30 days)
+        from datetime import datetime, timedelta
+        expires_at = datetime.now() + timedelta(days=30)
+        await db.create_admin_session(token, expires_at)
         return LoginResponse(success=True, token=token, message="Login successful")
     else:
         return LoginResponse(success=False, message="Invalid credentials")
@@ -162,8 +166,8 @@ async def login(request: LoginRequest):
 @router.post("/api/logout")
 async def logout(token: str = Depends(verify_admin_token)):
     """Admin logout"""
-    # Remove token from active tokens
-    active_admin_tokens.discard(token)
+    # Remove token from database
+    await db.delete_admin_session(token)
     return {"success": True, "message": "Logged out successfully"}
 
 # Token management endpoints

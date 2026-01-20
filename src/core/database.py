@@ -805,6 +805,53 @@ class Database:
                 WHERE id = 1
             """, config.admin_username, config.admin_password, config.api_key, config.error_ban_threshold)
     
+    # Admin session operations
+    async def create_admin_session(self, token: str, expires_at: Optional[datetime] = None):
+        """Create a new admin session"""
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO admin_sessions (token, expires_at)
+                VALUES ($1, $2)
+                ON CONFLICT (token) DO UPDATE
+                SET last_used_at = CURRENT_TIMESTAMP, expires_at = $2
+            """, token, expires_at)
+    
+    async def get_admin_session(self, token: str) -> Optional[dict]:
+        """Get admin session by token"""
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT * FROM admin_sessions
+                WHERE token = $1
+                AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+            """, token)
+            if row:
+                return dict(row)
+            return None
+    
+    async def update_admin_session_last_used(self, token: str):
+        """Update admin session last used time"""
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE admin_sessions
+                SET last_used_at = CURRENT_TIMESTAMP
+                WHERE token = $1
+            """, token)
+    
+    async def delete_admin_session(self, token: str):
+        """Delete admin session"""
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM admin_sessions WHERE token = $1", token)
+    
+    async def cleanup_expired_admin_sessions(self):
+        """Clean up expired admin sessions"""
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM admin_sessions WHERE expires_at IS NOT NULL AND expires_at < CURRENT_TIMESTAMP")
+    
     # Proxy config operations
     async def get_proxy_config(self) -> ProxyConfig:
         """Get proxy configuration"""

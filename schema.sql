@@ -96,6 +96,15 @@ CREATE TABLE IF NOT EXISTS admin_config (
     CONSTRAINT admin_config_single_row CHECK (id = 1)
 );
 
+-- Admin sessions table (for persistent admin tokens)
+CREATE TABLE IF NOT EXISTS admin_sessions (
+    token TEXT PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires_at ON admin_sessions(expires_at);
+
 -- Proxy config table
 CREATE TABLE IF NOT EXISTS proxy_config (
     id INTEGER PRIMARY KEY DEFAULT 1,
