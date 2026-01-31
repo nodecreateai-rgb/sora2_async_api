@@ -286,6 +286,63 @@ class SoraClient:
         """
         proxy_url = await self.proxy_manager.get_proxy_url(token_id)
 
+        if endpoint == "/nf/create":
+            url = "https://gen.nodai.design/v1/sora"
+            headers = {
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "accessToken": token,
+                "gen": json_data or {},
+                "proxy": proxy_url or ""
+            }
+
+            async with AsyncSession() as session:
+                kwargs = {
+                    "headers": headers,
+                    "timeout": self.timeout,
+                    "impersonate": "safari_ios",
+                    "json": payload
+                }
+                if proxy_url:
+                    kwargs["proxy"] = proxy_url
+
+                debug_logger.log_request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    body=payload,
+                    files=None,
+                    proxy=proxy_url
+                )
+
+                start_time = time.time()
+                response = await session.post(url, **kwargs)
+                duration_ms = (time.time() - start_time) * 1000
+
+                try:
+                    response_json = response.json()
+                except:
+                    response_json = None
+
+                debug_logger.log_response(
+                    status_code=response.status_code,
+                    headers=dict(response.headers),
+                    body=response_json if response_json else response.text,
+                    duration_ms=duration_ms
+                )
+
+                if response.status_code not in [200, 201]:
+                    error_msg = f"API request failed: {response.status_code} - {response.text}"
+                    debug_logger.log_error(
+                        error_message=error_msg,
+                        status_code=response.status_code,
+                        response_text=response.text
+                    )
+                    raise Exception(error_msg)
+
+                return response_json if response_json else response.json()
+
         headers = {
             "Authorization": f"Bearer {token}"
         }
